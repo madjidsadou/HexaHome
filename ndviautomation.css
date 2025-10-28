@@ -5,3 +5,7 @@
   z-index: 1;
 }
 
+.leaflet-overlay-pane svg { 
+  pointer-events: none; 
+  z-index: 300;
+}
