@@ -5,23 +5,23 @@ var map = L.map('map', {
   maxZoom: 20
 });
 
-// Add base layer
+// Base layer
 L.tileLayer('https://{s}.tile.osm.org/{z}/{x}/{y}.png', {
   attribution: '&copy; OpenStreetMap contributors'
 }).addTo(map);
 
-// Add Leaflet SVG overlay
+// SVG overlay for D3
 L.svg().addTo(map);
 const svg = d3.select(map.getPanes().overlayPane).select("svg");
 const g = svg.append("g").attr("class", "leaflet-zoom-hide");
 
-// Load Swiss GeoJSON
+// Load Switzerland GeoJSON
 d3.json("geowgs.geojson").then(function(swissData) {
 
-  // 1️⃣ Draw Switzerland boundaries
+  // 🗺️ Draw Swiss border
   const path = d3.geoPath().projection(d3.geoTransform({
     point: function(x, y) {
-      const point = map.latLngToLayerPoint([y, x]); // Leaflet expects [lat, lon]
+      const point = map.latLngToLayerPoint([y, x]);
       this.stream.point(point.x, point.y);
     }
   }));
@@ -41,53 +41,49 @@ d3.json("geowgs.geojson").then(function(swissData) {
   map.on("zoom viewreset move", resetBoundary);
   resetBoundary();
 
-  // 2️⃣ Generate hexbin covering Switzerland
-  const hex = d3.hexbin().radius(30);
+  // 🧭 Geo bounds of Switzerland
+  const bounds = d3.geoBounds(swissData);
+  const [min, max] = bounds;
 
-  function generateHex() {
-    // Compute bounding box in LatLng
-    const bounds = d3.geoBounds(swissData); // [[minLon, minLat],[maxLon,maxLat]]
-    const [min, max] = bounds;
+  // 🟢 Generate lat/lng hex grid once
+  const hexRadiusDeg = 0.1; // controls hex size (≈ 8–10 km)
+  const hex = d3.hexbin().radius(30); // used only for shape (not geo spacing)
 
-    // Convert bounds to layer points
-    const tl = map.latLngToLayerPoint([max[1], min[0]]); // top-left
-    const br = map.latLngToLayerPoint([min[1], max[0]]); // bottom-right
-
-    // Generate grid points in pixel space
-    let points = [];
-    for (let x = tl.x; x <= br.x; x += hex.radius()) {
-      for (let y = tl.y; y <= br.y; y += hex.radius() * Math.sqrt(3)/2) {
-        points.push([x, y]);
+  let hexCenters = [];
+  for (let lon = min[0]; lon <= max[0]; lon += hexRadiusDeg) {
+    for (let lat = min[1]; lat <= max[1]; lat += hexRadiusDeg * Math.sqrt(3) / 2) {
+      if (d3.geoContains(swissData, [lon, lat])) {
+        hexCenters.push([lon, lat]);
       }
     }
+  }
 
-    // Compute hex bins
-    let bins = hex(points);
-
-    // Keep only hexes inside Switzerland
-    bins = bins.filter(bin => {
-      const latlng = map.layerPointToLatLng([bin.x, bin.y]);
-      return d3.geoContains(swissData, [latlng.lng, latlng.lat]);
+  // 🔄 Function to project and render
+  function projectHexes() {
+    const projected = hexCenters.map(([lon, lat]) => {
+      const pt = map.latLngToLayerPoint([lat, lon]);
+      return [pt.x, pt.y];
     });
 
-    // Bind data and draw hexes
+    const bins = hex(projected);
+
     const hexPaths = g.selectAll("path.hex").data(bins);
 
     hexPaths.enter()
       .append("path")
       .attr("class", "hex")
       .merge(hexPaths)
-      .attr("d", d => hex.hexagon())
+      .attr("d", hex.hexagon())
       .attr("transform", d => `translate(${d.x},${d.y})`)
       .attr("fill", "#69b3a2")
       .attr("stroke", "#000")
-      .attr("stroke-width", 0.5)
+      .attr("stroke-width", 0.3)
       .attr("fill-opacity", 0.5);
 
     hexPaths.exit().remove();
   }
 
-  generateHex();
-  map.on("zoom viewreset move", generateHex); // update hexes on zoom/pan
-
+  // Render once and when zoom changes
+  projectHexes();
+  map.on("zoomend", projectHexes);
 });
