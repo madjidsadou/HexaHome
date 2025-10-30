@@ -1,24 +1,26 @@
-const map = L.map('map', {
+var map = L.map('map', {
   center: [46.5358, 8.2],
   zoom: 8,
   minZoom: 2,
   maxZoom: 20
 });
 
+// Base layer
 L.tileLayer('https://{s}.tile.osm.org/{z}/{x}/{y}.png', {
   attribution: '&copy; OpenStreetMap contributors'
 }).addTo(map);
 
+// SVG overlay for D3
 L.svg().addTo(map);
 const svg = d3.select(map.getPanes().overlayPane).select("svg");
 const g = svg.append("g").attr("class", "leaflet-zoom-hide");
 
-// Load Switzerland boundaries
-d3.json("geowgs.geojson").then(function (swissData) {
+// Load Switzerland GeoJSON
+d3.json("geowgs.geojson").then(function(swissData) {
 
-  // Draw boundary
+  // 🗺️ Draw Swiss border
   const path = d3.geoPath().projection(d3.geoTransform({
-    point: function (x, y) {
+    point: function(x, y) {
       const point = map.latLngToLayerPoint([y, x]);
       this.stream.point(point.x, point.y);
     }
@@ -39,58 +41,49 @@ d3.json("geowgs.geojson").then(function (swissData) {
   map.on("zoom viewreset move", resetBoundary);
   resetBoundary();
 
-  // === H3 Section ===
-  const h3Index = h3.latLngToCell(46.5358, 8.2, 6);
-  console.log("H3 index:", h3Index);
+  // 🧭 Geo bounds of Switzerland
+  const bounds = d3.geoBounds(swissData);
+  const [min, max] = bounds;
 
-  const hexCenterCoordinates = h3.cellToLatLng(h3Index);
-  console.log("Hex center:", hexCenterCoordinates);
+  // 🟢 Generate lat/lng hex grid once
+  const hexRadiusDeg = 0.1; // controls hex size (≈ 8–10 km)
+  const hex = d3.hexbin().radius(30); // used only for shape (not geo spacing)
 
-  const hexBoundary = h3.cellToBoundary(h3Index);
-  console.log("Hex boundary:", hexBoundary);
-
-  const disk = h3.gridDisk(h3Index, 6);
-  console.log("Neighbors:", disk);
-
-  // === Polygon from GeoJSON ===
-  const geoJsonFeature = swissData.features[1];
-
-  let polygonCoords = [];
-  if (geoJsonFeature.geometry.type === "Polygon") {
-    polygonCoords = geoJsonFeature.geometry.coordinates[0].map(([lon, lat]) => [lat, lon]);
-  } else if (geoJsonFeature.geometry.type === "MultiPolygon") {
-    polygonCoords = geoJsonFeature.geometry.coordinates[0][0].map(([lon, lat]) => [lat, lon]);
+  let hexCenters = [];
+  for (let lon = min[0]; lon <= max[0]; lon += hexRadiusDeg) {
+    for (let lat = min[1]; lat <= max[1]; lat += hexRadiusDeg * Math.sqrt(3) / 2) {
+      if (d3.geoContains(swissData, [lon, lat])) {
+        hexCenters.push([lon, lat]);
+      }
+    }
   }
 
-  console.log("Polygon coordinates for H3:", polygonCoords);
+  // 🔄 Function to project and render
+  function projectHexes() {
+    const projected = hexCenters.map(([lon, lat]) => {
+      const pt = map.latLngToLayerPoint([lat, lon]);
+      return [pt.x, pt.y];
+    });
 
-  const hexagons = h3.polygonToCells(polygonCoords, 5);
-  console.log("Hexagons in polygon:", hexagons);
+    const bins = hex(projected);
 
-  const hexMultiPolygon = h3.cellsToMultiPolygon(hexagons, true);
+    const hexPaths = g.selectAll("path.hex").data(bins);
 
-  // ✅ Flip coordinates for Leaflet [lng, lat] → [lat, lng]
-  const flippedHexMultiPolygon = {
-    type: "Feature",
-    geometry: {
-      type: "MultiPolygon",
-      coordinates: hexMultiPolygon.map(polygon =>
-        polygon.map(ring =>
-          ring.map(([lng, lat]) => [lng, lat])
-        )
-      )
-    }
-  };
+    hexPaths.enter()
+      .append("path")
+      .attr("class", "hex")
+      .merge(hexPaths)
+      .attr("d", hex.hexagon())
+      .attr("transform", d => `translate(${d.x},${d.y})`)
+      .attr("fill", "#69b3a2")
+      .attr("stroke", "#000")
+      .attr("stroke-width", 0.3)
+      .attr("fill-opacity", 0.5);
 
-  console.log("to display", flippedHexMultiPolygon);
+    hexPaths.exit().remove();
+  }
 
-  // Create a Leaflet GeoJSON layer
-  const hexLayer = L.geoJSON(flippedHexMultiPolygon, {
-    style: {
-      color: "#c12727ff",
-      weight: 1,
-      fillOpacity: 0.3,
-      stroke: "#000000ff"
-    }
-  }).addTo(map);
+  // Render once and when zoom changes
+  projectHexes();
+  map.on("zoomend", projectHexes);
 });
