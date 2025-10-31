@@ -5,49 +5,18 @@ var map = L.map('map', {
   maxZoom: 15
 });
 
-  const toggle = document.getElementById("toggle-cantons");
-  const cantonList = document.getElementById("cantons-list");
+const toggle = document.getElementById("toggle-cantons");
+const cantonList = document.getElementById("cantons-list");
 
-  toggle.addEventListener("click", () => {
-    if (cantonList.style.display === "none") {
-      cantonList.style.display = "block";
-      toggle.innerHTML = "Choose Canton(s) &#9650;"; // up arrow
-    } else {
-      cantonList.style.display = "none";
-      toggle.innerHTML = "Choose Canton(s) &#9660;"; // down arrow
-    }
-  });
-
-  
-
-const cantons = {
-  1: "Zürich",
-  2: "Bern",
-  3: "Luzern",
-  4: "Uri",
-  5: "Schwyz",
-  6: "Obwalden",
-  7: "Nidwalden",
-  8: "Glarus",
-  9: "Zug",
-  10: "Fribourg",
-  11: "Solothurn",
-  12: "Basel-Stadt",
-  13: "Basel-Landschaft",
-  14: "Schaffhausen",
-  15: "Appenzell Ausserrhoden",
-  16: "Appenzell Innerrhoden",
-  17: "St. Gallen",
-  18: "Graubünden",
-  19: "Aargau",
-  20: "Thurgau",
-  21: "Ticino",
-  22: "Vaud",
-  23: "Valais",
-  24: "Neuchâtel",
-  25: "Geneva",
-  26: "Jura"
-};
+toggle.addEventListener("click", () => {
+  if (cantonList.style.display === "none" || cantonList.style.display === "") {
+    cantonList.style.display = "block";
+    toggle.innerHTML = "Choose Canton(s) &#9650;";
+  } else {
+    cantonList.style.display = "none";
+    toggle.innerHTML = "Choose Canton(s) &#9660;";
+  }
+});
 
 // Base layer
 L.tileLayer('https://{s}.tile.osm.org/{z}/{x}/{y}.png', {
@@ -59,68 +28,78 @@ L.svg().addTo(map);
 const svg = d3.select(map.getPanes().overlayPane).select("svg");
 const g = svg.append("g").attr("class", "leaflet-zoom-hide");
 
-// Load the GeoJSON file
-d3.json("./kanton.geojson").then(function(swissData) {
+let selectedKantonNum = [];
 
-  // ✅ Choose the canton number you want to display
-  const selectedKantonNum = 50; // <-- change this number to another canton
+d3.json("./kanton.geojson").then(function (swissData) {
 
-  // ✅ Filter only the matching canton feature(s)
-  const cantonFeature = swissData.features.filter(
-    f => f.properties.KANTONSNUM === selectedKantonNum
-  );
+  // 🟠 Event listener: when checkbox selection changes
+  document.getElementById('cantons-list').addEventListener('click', async () => {
+    selectedKantonNum = Array.from(
+      document.querySelectorAll('#cantons-list input[type="checkbox"]:checked')
+    ).map(cb => parseInt(cb.value));
 
-  if (cantonFeature.length === 0) {
-    console.error("No canton found with KANTONSNUM =", selectedKantonNum);
+    await updateMap(); // refresh visualization
+  });
+
+  async function updateMap() {
+    // remove old paths and hexes
+    g.selectAll("path.boundary").remove();
+    g.selectAll("path.hex").remove();
+
+    // filter selected cantons
+    const cantonFeatures = swissData.features.filter(f =>
+      selectedKantonNum.includes(f.properties.KANTONSNUM)
+    );
+
+      if (cantonFeatures.length === 0) {
+    map.off("zoomend"); // make sure no hex redraw on zoom
     return;
   }
+;
 
-  // Define D3 projection linked to Leaflet map
-  const path = d3.geoPath().projection(d3.geoTransform({
-    point: function (x, y) {
-      const point = map.latLngToLayerPoint([y, x]);
-      this.stream.point(point.x, point.y);
+    // D3 projection linked to Leaflet
+    const path = d3.geoPath().projection(d3.geoTransform({
+      point: function (x, y) {
+        const point = map.latLngToLayerPoint([y, x]);
+        this.stream.point(point.x, point.y);
+      }
+    }));
+
+    // Draw canton borders
+    const feature = g.selectAll("path.boundary")
+      .data(cantonFeatures)
+      .enter()
+      .append("path")
+      .attr("class", "boundary")
+      .attr("fill", "none")
+      .attr("stroke", "black")
+      .attr("stroke-width", 1.2);
+
+    function resetBoundary() {
+      feature.attr("d", path);
     }
-  }));
 
-  // Draw the filtered canton
-  const feature = g.selectAll("path.boundary")
-    .data(cantonFeature)
-    .enter()
-    .append("path")
-    .attr("class", "boundary")
-    .attr("fill", "none")
-    .attr("stroke", "black")
-    .attr("stroke-width", 1.5);
+    map.on("zoom viewreset move", resetBoundary);
+    resetBoundary();
 
+map.off("zoomend");
 
-
-  // Function to reposition on zoom/move
-  function resetBoundary() {
-    feature.attr("d", path);
-  }
-
-  map.on("zoom viewreset move", resetBoundary);
-  resetBoundary();
-
-  // 🧭 Geo bounds of Switzerland
-  const bounds = d3.geoBounds(cantonFeature[0]);
+// Then for each selected canton
+cantonFeatures.forEach(cantonFeature => {
+  const bounds = d3.geoBounds(cantonFeature);
   const [min, max] = bounds;
-
-  // 🟢 Generate lat/lng hex grid once
-  const hexRadiusDeg = 0.0018 ; // controls hex size (≈ 8–10 km)
-  const hex = d3.hexbin().radius(40); // used only for shape (not geo spacing)
+  const hexRadiusDeg = 0.01;
+  const hex = d3.hexbin().radius(40);
 
   let hexCenters = [];
   for (let lon = min[0]; lon <= max[0]; lon += hexRadiusDeg) {
     for (let lat = min[1]; lat <= max[1]; lat += hexRadiusDeg * Math.sqrt(3) / 2) {
-      if (d3.geoContains(cantonFeature[0], [lon, lat])) {
+      if (d3.geoContains(cantonFeature, [lon, lat])) {
         hexCenters.push([lon, lat]);
       }
     }
   }
 
-  // 🔄 Function to project and render
   function projectHexes() {
     const projected = hexCenters.map(([lon, lat]) => {
       const pt = map.latLngToLayerPoint([lat, lon]);
@@ -129,11 +108,12 @@ d3.json("./kanton.geojson").then(function(swissData) {
 
     const bins = hex(projected);
 
-    const hexPaths = g.selectAll("path.hex").data(bins);
+    const hexPaths = g.selectAll(`path.hex-${cantonFeature.properties.KANTONSNUM}`)
+      .data(bins, d => d.x + "," + d.y);
 
     hexPaths.enter()
       .append("path")
-      .attr("class", "hex")
+      .attr("class", `hex hex-${cantonFeature.properties.KANTONSNUM}`)
       .merge(hexPaths)
       .attr("d", hex.hexagon())
       .attr("transform", d => `translate(${d.x},${d.y})`)
@@ -145,7 +125,8 @@ d3.json("./kanton.geojson").then(function(swissData) {
     hexPaths.exit().remove();
   }
 
-  // Render once and when zoom changes
   projectHexes();
-  map.on("zoomend", projectHexes);
+  map.on("zoomend", projectHexes); 
+
 });
+  }})

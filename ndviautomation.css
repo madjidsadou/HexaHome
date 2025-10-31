@@ -40,18 +40,12 @@
     background: #45a049;
   }
 
-  /* Arrow icon */
-  #toggle-cantons::after {
-    content: "▼";
-    position: absolute;
-    right: 10px;
-    transition: transform 0.3s;
-  }
 
   /* Arrow rotated when open */
   #toggle-cantons.open::after {
     transform: rotate(180deg);
   }
+  
 
   /* Checkbox list container */
   #cantons-list {
@@ -63,7 +57,6 @@
 
   /* Show when open */
   #cantons-list.open {
-    max-height: 500px; /* large enough to show all checkboxes */
     padding: 10px 0;
   }
 
