@@ -2,7 +2,11 @@ var map = L.map('map', {
   center: [46.8, 8.3],
   zoom: 8,
   minZoom: 8,
-  maxZoom: 15
+  maxZoom: 15,
+  maxBounds: [
+    [45.7, 4.9],  // southwest corner
+    [47.9, 11.7]  // northeast corner
+  ]
 });
 
 const toggle = document.getElementById("toggle-cantons");
@@ -124,7 +128,23 @@ cantonFeatures.forEach(cantonFeature => {
 
     hexPaths.exit().remove();
   }
+cantonFeatures.forEach(cantonFeature => {
+  // Compute geographic bounds of this canton
+  const bounds = d3.geoBounds(cantonFeature); 
+  // bounds = [[minLon, minLat], [maxLon, maxLat]]
 
+  // Convert to Leaflet LatLngBounds and zoom to it
+  setTimeout(()=> {
+  map.flyToBounds([
+    [bounds[0][1], bounds[0][0]], // southwest corner (lat, lon)
+    [bounds[1][1], bounds[1][0]]  // northeast corner (lat, lon)
+  ], {
+    padding: [40, 40],
+    duration: 1,
+    await: 2
+  });
+},300);
+})
   projectHexes();
   map.on("zoomend", projectHexes); 
 
