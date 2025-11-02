@@ -10,77 +10,75 @@
   z-index: 300;
 }
 
-  #menu {
-    position: absolute;
-    top: 10px; left: 70px;
-    width: 300px;
-    z-index: 1000;
-    background: rgba(155, 146, 146, 0.301);
-    opacity: 0.;
-    padding: 10px;
-    border-radius: 8px;
-    box-shadow: 0 2px 6px rgba(0,0,0,0.2);
-    font-family: sans-serif;
-  }
+#menu {
+  position: absolute;
+  top: 10px;
+  left: 70px;
+  width: 300px;
+  z-index: 1000;
+  background: rgba(155, 146, 146, 0.301);
+  opacity: 1; /* changed from 0. to 1 for visibility */
+  padding: 10px;
+  border-radius: 8px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+  font-family: sans-serif;
+}
 
-    #toggle-cantons {
-    cursor: pointer;
-    font-weight: bold;
-    position: relative;
-    padding: 10px;
-    margin: 0;
-    background: #4CAF50;
-    color: white;
-    border-radius: 5px;
-    user-select: none;
-    transition: background 0.3s;
-  }
+#toggle-cantons {
+  cursor: pointer;
+  font-weight: bold;
+  position: relative;
+  padding: 10px;
+  margin: 0;
+  background: #4CAF50;
+  color: white;
+  border-radius: 5px;
+  user-select: none;
+  transition: background 0.3s;
+}
 
-  #toggle-cantons:hover {
-    background: #45a049;
-  }
+#toggle-cantons:hover {
+  background: #45a049;
+}
 
+/* Arrow rotated when open */
+#toggle-cantons.open::after {
+  transform: rotate(180deg);
+}
 
-  /* Arrow rotated when open */
-  #toggle-cantons.open::after {
-    transform: rotate(180deg);
-  }
-  
+/* Checkbox list container */
+#cantons-list {
+  overflow: hidden;
+  transition: max-height 0.4s ease, padding 0.4s ease;
+  padding-left: 10px;
+  margin-top: 5px;
+}
 
-  /* Checkbox list container */
-  #cantons-list {
-    overflow: hidden;
-    transition: max-height 0.4s ease, padding 0.4s ease;
-    padding-left: 10px;
-    margin-top: 5px;
-  }
+/* Show when open */
+#cantons-list.open {
+  padding: 10px 0;
+}
 
-  /* Show when open */
-  #cantons-list.open {
-    padding: 10px 0;
-  }
+/* Each checkbox label */
+.checkbox-group label {
+  display: inline-flex;
+  margin-bottom: 5px;
+  cursor: pointer;
+  padding: 5px;
+  border-radius: 5px;
+  transition: background 0.3s;
+}
 
-  /* Each checkbox label */
-  .checkbox-group label {
-    display:inline-flex;
-    margin-bottom: 5px;
-    cursor: pointer;
-    padding: 5px;
-    border-radius: 5px;
-    transition: background 0.3s;
-  }
+.checkbox-group label:hover {
+  background: #e0f2e9;
+}
 
-  .checkbox-group label:hover {
-    background: #e0f2e9;
-  }
-
-  /* Index dropdown styling */
-  #index-select {
-    width: 100%;
-    padding: 7px;
-    margin-top: 10px;
-    border-radius: 5px;
-    border: 1px solid #ccc;
-    font-size: 14px;
-  }
-
+/* Index dropdown styling */
+#index-select {
+  width: 100%;
+  padding: 7px;
+  margin-top: 10px;
+  border-radius: 5px;
+  border: 1px solid #ccc;
+  font-size: 14px;
+}

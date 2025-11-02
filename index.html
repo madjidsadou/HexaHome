@@ -9,56 +9,59 @@
 </head>
 <body>
   <div class="container">
-<div id="menu">
-  <h4 id="toggle-cantons" style="cursor: pointer;">Choose Canton(s) &#9660;</h4>
-  <div id="cantons-list" class="checkbox-group" style="display: none; margin-left: 15px;">
-    <label><input type="checkbox" value="1"> Zürich</label>
-    <label><input type="checkbox" value="2"> Bern</label>
-    <label><input type="checkbox" value="3"> Luzern</label>
-    <label><input type="checkbox" value="4"> Uri</label>
-    <label><input type="checkbox" value="5"> Schwyz</label>
-    <label><input type="checkbox" value="6"> Obwalden</label>
-    <label><input type="checkbox" value="7"> Nidwalden</label>
-    <label><input type="checkbox" value="8"> Glarus</label>
-    <label><input type="checkbox" value="9"> Zug</label>
-    <label><input type="checkbox" value="10"> Fribourg</label>
-    <label><input type="checkbox" value="11"> Solothurn</label>
-    <label><input type="checkbox" value="12"> Basel-Stadt</label>
-    <label><input type="checkbox" value="13"> Basel-Landschaft</label>
-    <label><input type="checkbox" value="14"> Schaffhausen</label>
-    <label><input type="checkbox" value="15"> Appenzell Ausserrhoden</label>
-    <label><input type="checkbox" value="16"> Appenzell Innerrhoden</label>
-    <label><input type="checkbox" value="17"> St. Gallen</label>
-    <label><input type="checkbox" value="18"> Graubünden</label>
-    <label><input type="checkbox" value="19"> Aargau</label>
-    <label><input type="checkbox" value="20"> Thurgau</label>
-    <label><input type="checkbox" value="21"> Ticino</label>
-    <label><input type="checkbox" value="22"> Vaud</label>
-    <label><input type="checkbox" value="23"> Valais</label>
-    <label><input type="checkbox" value="24"> Neuchâtel</label>
-    <label><input type="checkbox" value="25"> Geneva</label>
-    <label><input type="checkbox" value="26"> Jura</label>
-  </div>
+    <div id="menu">
+      <h4 id="toggle-cantons" style="cursor: pointer;">Choose Canton(s) &#9660;</h4>
+      <div id="cantons-list" class="checkbox-group" style="display: none; margin-left: 15px;">
+        <label><input type="checkbox" value="1"> Zürich</label>
+        <label><input type="checkbox" value="2"> Bern</label>
+        <label><input type="checkbox" value="3"> Luzern</label>
+        <label><input type="checkbox" value="4"> Uri</label>
+        <label><input type="checkbox" value="5"> Schwyz</label>
+        <label><input type="checkbox" value="6"> Obwalden</label>
+        <label><input type="checkbox" value="7"> Nidwalden</label>
+        <label><input type="checkbox" value="8"> Glarus</label>
+        <label><input type="checkbox" value="9"> Zug</label>
+        <label><input type="checkbox" value="10"> Fribourg</label>
+        <label><input type="checkbox" value="11"> Solothurn</label>
+        <label><input type="checkbox" value="12"> Basel-Stadt</label>
+        <label><input type="checkbox" value="13"> Basel-Landschaft</label>
+        <label><input type="checkbox" value="14"> Schaffhausen</label>
+        <label><input type="checkbox" value="15"> Appenzell Ausserrhoden</label>
+        <label><input type="checkbox" value="16"> Appenzell Innerrhoden</label>
+        <label><input type="checkbox" value="17"> St. Gallen</label>
+        <label><input type="checkbox" value="18"> Graubünden</label>
+        <label><input type="checkbox" value="19"> Aargau</label>
+        <label><input type="checkbox" value="20"> Thurgau</label>
+        <label><input type="checkbox" value="21"> Ticino</label>
+        <label><input type="checkbox" value="22"> Vaud</label>
+        <label><input type="checkbox" value="23"> Valais</label>
+        <label><input type="checkbox" value="24"> Neuchâtel</label>
+        <label><input type="checkbox" value="25"> Geneva</label>
+        <label><input type="checkbox" value="26"> Jura</label>
+      </div>
 
-  <h4>Choose Index</h4>
-  <select id="index-select">
-    <option value="ndvi">NDVI (Vegetation)</option>
-    <option value="noise">Noise Levels</option>
-    <option value="pollution">Air Pollution</option>
-  </select>
-</div>
+      <h4>Choose Index</h4>
+      <select id="index-select">
+        <option value="ndvi">NDVI (Vegetation)</option>
+        <option value="noise">Noise Levels</option>
+        <option value="pollution">Air Pollution</option>
+      </select>
+    </div>
 
-  <div id="map"></div>
+    <div id="map">  
+    </div>
   </div>
-  </div>
+  <script src="https://cdn.jsdelivr.net/npm/geotiff"></script>
   <script src="https://d3js.org/d3.v4.min.js"></script>
   <script src="https://d3js.org/d3-scale-chromatic.v1.min.js"></script>
   <script src="https://d3js.org/d3-hexbin.v0.2.min.js"></script>
   <script src="https://d3js.org/topojson.v2.min.js"></script>
   <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/6.7.0/d3.min.js"
-          integrity="sha512-cd6CHE+XWDQ33ElJqsi0MdNte3S+bQY819f7p3NUHgwQQLXSKjE4cPZTeGNI+vaxZynk1wVU3hoHmow3m089wA=="
-          crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/georaster/dist/georaster.browser.min.js"></script>
+  <script src="https://unpkg.com/georaster-layer-for-leaflet/dist/georaster-layer-for-leaflet.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/6.7.0/d3.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.8.0/proj4.js"></script>
+  <script src="https://unpkg.com/georaster-layer-for-leaflet"></script>
   <script src="https://d3js.org/d3-scale-chromatic.v1.min.js"></script>
   <script src="ndviautomation.js"></script>
 </body>
