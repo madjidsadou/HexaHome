@@ -332,4 +332,102 @@ function drawschools() {
   });
 }
 
-drawschools();
+// drawschools();
+
+function apartments() {
+  d3.dsv(";", "./apartments.csv").then(function(apart) {
+    console.log("Raw CSV data:", apart);
+
+    // Parse the CSV data (assuming semicolon-delimited)
+    const apartmentsData = apart
+      .filter(d => d.lat && d.lon) // keep rows with valid coordinates
+      .map(d => ({
+        lat: +d.lat,
+        lon: +d.lon,
+        address: d.address || "",
+        price: d.price ? +d.price : null,
+        rooms: d.rooms ? +d.rooms : null,
+        canton: d.canton || ""
+      }));
+
+    console.log("Parsed apartments:", apartmentsData);
+    console.log("Map bounds:", map.getBounds());
+
+    // Test: are coordinates valid?
+    if (apartmentsData.length > 0) {
+      const first = apartmentsData[0];
+      console.log("First apartment lat/lon:", first.lat, first.lon);
+      console.log("Projected point:", map.latLngToLayerPoint([first.lat, first.lon]));
+    }
+
+    // Create SVG layer
+    const svg = d3.select(map.getPanes().overlayPane).append("svg")
+      .style("position", "absolute")
+      .style("top", 0)
+      .style("left", 0)
+      .style("pointer-events", "none");
+    
+    console.log("SVG created:", svg.node());
+    
+    const g = svg.append("g").attr("class", "leaflet-zoom-hide");
+
+    // Bind data and create circles
+    const points = g.selectAll("circle.apartment")
+      .data(apartmentsData)
+      .enter()
+      .append("circle")
+      .attr("class", "apartment")
+      .attr("r", 6)
+      .attr("fill", "blue")
+      .attr("fill-opacity", 0.6)
+      .attr("stroke", "white")
+      .attr("stroke-width", 2)
+      .style("pointer-events", "auto")
+      .attr("cursor", "pointer")
+      .on("mouseover", function(event, d) {
+        L.popup()
+          .setLatLng([d.lat, d.lon])
+          .setContent(`
+            <b>${d.address}</b><br>
+            Price: CHF ${d.price}<br>
+            Rooms: ${d.rooms}<br>
+            Canton: ${d.canton}
+          `)
+          .openOn(map);
+      });
+
+    console.log("Circles created:", points.size());
+
+    // Update function to position circles and resize SVG
+    function update() {
+      const bounds = map.getBounds();
+      const topLeft = map.latLngToLayerPoint(bounds.getNorthWest());
+      const bottomRight = map.latLngToLayerPoint(bounds.getSouthEast());
+
+      svg
+        .attr("width", bottomRight.x - topLeft.x)
+        .attr("height", bottomRight.y - topLeft.y)
+        .style("left", topLeft.x + "px")
+        .style("top", topLeft.y + "px");
+
+      g.attr("transform", `translate(${-topLeft.x},${-topLeft.y})`);
+
+      points
+        .attr("cx", d => {
+          const point = map.latLngToLayerPoint([d.lat, d.lon]);
+          return point.x;
+        })
+        .attr("cy", d => {
+          const point = map.latLngToLayerPoint([d.lat, d.lon]);
+          return point.y;
+        });
+      
+      console.log("Update called - SVG dimensions:", svg.attr("width"), svg.attr("height"));
+    }
+
+    update();
+    map.on("zoomend viewreset moveend", update);
+
+  }).catch(error => console.error(error));
+}
+apartments();
