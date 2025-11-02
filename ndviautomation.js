@@ -187,7 +187,7 @@ function updateDisplay() {
 // Load precomputed data and GeoJSON
 Promise.all([
   d3.json("./kanton.geojson"),
-  d3.json("./hexdata_res1.0.json") // Your precomputed file
+  d3.json("./hexdata_res1.0.json") 
 ]).then(function ([geoData, precompData]) {
   swissData = geoData;
   hexRadiusDeg = precompData.resolution;
@@ -270,4 +270,66 @@ async function loadGeoTIFF() {
 }
 
 // 6️⃣ Call the function
-loadGeoTIFF();
+//  loadGeoTIFF();
+
+function drawschools() {
+  Promise.all([
+    d3.json("./schools.geojson")
+  ]).then(function ([data]) {
+
+    // Create an SVG layer
+    const svg = d3.select(map.getPanes().overlayPane).append("svg");
+    const g = svg.append("g").attr("class", "leaflet-zoom-hide");
+
+    // Helper projection
+    function projectPoint(lon, lat) {
+      const point = map.latLngToLayerPoint([lat, lon]);
+      return [point.x, point.y];
+    }
+
+    // Extract first coordinate of polygons/multipolygons
+    const schools = data.features.map(f => {
+      if (f.geometry.type === "Polygon") return f.geometry.coordinates[0][0];
+      if (f.geometry.type === "MultiPolygon") return f.geometry.coordinates[0][0][0];
+      if (f.geometry.type === "Point") return f.geometry.coordinates;
+    }).filter(Boolean);
+
+    // Append circles
+    const points = g.selectAll("circle.school")
+      .data(schools)
+      .enter()
+      .append("circle")
+      .attr("class", "school")
+      .attr("r", 4)
+      .attr("fill", "red")
+      .attr("stroke", "black")
+      .attr("stroke-width", 1);
+
+    // Update function to set positions
+    function update() {
+      // Compute bounds of all points to size SVG
+      const bounds = d3.geoBounds({type: "FeatureCollection", features: data.features});
+      const topLeft = map.latLngToLayerPoint([bounds[1][1], bounds[0][0]]);
+      const bottomRight = map.latLngToLayerPoint([bounds[0][1], bounds[1][0]]);
+
+      svg.attr("width", bottomRight.x - topLeft.x)
+         .attr("height", bottomRight.y - topLeft.y)
+         .style("left", topLeft.x + "px")
+         .style("top", topLeft.y + "px");
+
+      g.attr("transform", `translate(${-topLeft.x},${-topLeft.y})`);
+
+      // Set circle positions
+      points.attr("cx", d => projectPoint(d[0], d[1])[0])
+            .attr("cy", d => projectPoint(d[0], d[1])[1]);
+    }
+
+    // Initial draw
+    update();
+
+    // Update on zoom/pan
+    map.on("zoomend viewreset moveend", update);
+  });
+}
+
+drawschools();
