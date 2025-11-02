@@ -22,6 +22,20 @@ toggle.addEventListener("click", () => {
   }
 });
 
+const toggleind = document.getElementById("index");
+const listind = document.getElementById("sliders-container");
+
+toggleind.addEventListener("click", () => {
+  if (listind.style.display === "none" || listind.style.display === "") {
+    listind.style.display = "block";
+    toggleind.innerHTML = "Adjust indexes &#9650;";
+  } else {
+    listind.style.display = "none";
+    toggleind.innerHTML = "Adjust indexes &#9660;";
+  }
+});
+
+
 // Base layer
 L.tileLayer('https://{s}.tile.osm.org/{z}/{x}/{y}.png', {
   attribution: '&copy; OpenStreetMap contributors'
