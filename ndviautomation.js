@@ -229,45 +229,45 @@ Promise.all([
 
 
 // 1️⃣ Define the UTM Zone 32N projection globally in proj4
-proj4.defs("EPSG:2056", "+proj=somerc +lat_0=46.95240555555556 +lon_0=7.439583333333333 +k_0=1 +x_0=2600000 +y_0=1200000 +ellps=bessel +towgs84=674.4,15.1,405.3,0,0,0,0 +units=m +no_defs");
+proj4.defs("EPSG:4326", "+proj=somerc +lat_0=46.95240555555556 +lon_0=7.439583333333333 +k_0=1 +x_0=2600000 +y_0=1200000 +ellps=bessel +towgs84=674.4,15.1,405.3,0,0,0,0 +units=m +no_defs");
 
 
 // 3️⃣ Async function to load the GeoTIFF
-async function loadGeoTIFF() {
-  try {
-    // Must be served via localhost or a web server
-    const response = await fetch("air_wgs84.tif");
-    const arrayBuffer = await response.arrayBuffer();
+// async function loadGeoTIFF() {
+//   try {
+//     // Must be served via localhost or a web server
+//     const response = await fetch("air_wgs84.tif");
+//     const arrayBuffer = await response.arrayBuffer();
     
-    // Parse GeoTIFF
-    const georaster = await parseGeoraster(arrayBuffer);
+//     // Parse GeoTIFF
+//     const georaster = await parseGeoraster(arrayBuffer);
 
-    console.log("GeoTIFF info:", georaster);
+//     console.log("GeoTIFF info:", georaster);
 
-    // 4️⃣ Create GeoRasterLayer
-    const layer = new GeoRasterLayer({
-      georaster,
-      opacity: 0.8,
-      pixelValuesToColorFn: val => {
-        if (val<1 || val>22) return null;
-        if (val < 5) return "#43ec21ff";
-        if (val < 15) return "#f5e31eff";
-        if (val < 24.2) return "#ff0000ff";
-        return "#1a9850";
-      }
-    });
+//     // 4️⃣ Create GeoRasterLayer
+//     const layer = new GeoRasterLayer({
+//       georaster,
+//       opacity: 0.8,
+//       pixelValuesToColorFn: val => {
+//         if (val<1 || val>22) return null;
+//         if (val < 5) return "#43ec21ff";
+//         if (val < 15) return "#f5e31eff";
+//         if (val < 24.2) return "#ff0000ff";
+//         return "#1a9850";
+//       }
+//     });
 
-    // 5️⃣ Add to map
-    layer.addTo(map);
+//     // 5️⃣ Add to map
+//     layer.addTo(map);
 
-    // Fit map to the raster bounds
-    map.fitBounds(layer.getBounds());
+//     // Fit map to the raster bounds
+//     map.fitBounds(layer.getBounds());
 
-    console.log("✅ GeoTIFF loaded successfully");
-  } catch (error) {
-    console.error("❌ Could not load GeoTIFF:", error);
-  }
-}
+//     console.log("✅ GeoTIFF loaded successfully");
+//   } catch (error) {
+//     console.error("❌ Could not load GeoTIFF:", error);
+//   }
+// }
 
 // 6️⃣ Call the function
 //  loadGeoTIFF();
@@ -430,4 +430,40 @@ function apartments() {
 
   }).catch(error => console.error(error));
 }
-apartments();
+// apartments();
+
+async function loadGeoTIFF1(filename) {
+  try {
+    // Fetch the GeoTIFF file dynamically
+    const response = await fetch(filename);
+    const arrayBuffer = await response.arrayBuffer();
+
+    // Parse GeoTIFF
+    const georaster = await parseGeoraster(arrayBuffer);
+    console.log("GeoTIFF info:", georaster);
+
+    // Create GeoRasterLayer
+    const layer = new GeoRasterLayer({
+      georaster,
+      opacity: 0.8,
+      pixelValuesToColorFn: val => {
+        if (val < 0 ) return null;
+        if (val > 1) return "#43ec21ff";
+        if (val > 20) return "#cdec21ff";
+        if (val > 50) return "#ec2121ff";
+
+
+      }
+    });
+
+    // Add to map and fit view
+    layer.addTo(map);
+    map.fitBounds(layer.getBounds());
+
+    console.log(`✅ GeoTIFF "${filename}" loaded successfully`);
+  } catch (error) {
+    console.error(`❌ Could not load GeoTIFF "${filename}":`, error);
+  }
+}
+
+loadGeoTIFF1("railwaynight_wgs84.tif");
