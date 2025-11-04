@@ -157,19 +157,23 @@ function projectHexes() {
     .append("path")
     .attr("class", "hex")
     .attr("stroke", "#000")
-    .attr("stroke-width", 0.1)
+    .attr("stroke-width", 0)
     .attr("fill-opacity", 0.7)
     .style("pointer-events", "auto")
-    .attr("cursor", "pointer")
-    // .on("mouseover", function(event, d) {
-    //   if (d.schoolDistance !== null) {
-    //     const distKm = (d.schoolDistance / 1000).toFixed(2);
-    //     L.popup()
-    //       .setLatLng([d.lat, d.lon])
-    //       .setContent(`<b>Distance to nearest school:</b><br>${distKm} km (${Math.round(d.schoolDistance)} m)`)
-    //       .openOn(map);
-    //   }
-    // })
+  .attr("cursor", "pointer")
+    .on("click", function(event, d) {
+      event.stopPropagation(); // Prevent map click event
+      const [x, y] = [event.pageX, event.pageY];
+      const containerPoint = map.mouseEventToContainerPoint(event);
+      const latlng = map.containerPointToLatLng(containerPoint);
+
+      L.popup()
+        .setLatLng(latlng)
+        .setContent(
+          `<b>Distance to nearest school:</b><br>${(d.schoolDistance/1000).toFixed(2)} km`
+        )
+        .openOn(map);
+    })
     .merge(hexPaths)
     .attr("fill", d => {
       if (d.schoolDistance === null) return "#69b3a2";
