@@ -2,7 +2,7 @@ var map = L.map('map', {
   center: [46.8, 8.3],
   zoom: 8,
   minZoom: 8,
-  maxZoom: 15,
+  maxZoom: 16,
   maxBounds: [
     [45.7, 4.9],
     [47.9, 11.7]
@@ -61,21 +61,21 @@ const projection = d3.geoTransform({
 const path = d3.geoPath().projection(projection);
 const hex = d3.hexbin().radius(30);
 
-// Calculate distance between two lat/lon points (in meters)
-function calculateDistance(lat1, lon1, lat2, lon2) {
-  const R = 6371e3; // Earth's radius in meters
-  const φ1 = lat1 * Math.PI / 180;
-  const φ2 = lat2 * Math.PI / 180;
-  const Δφ = (lat2 - lat1) * Math.PI / 180;
-  const Δλ = (lon2 - lon1) * Math.PI / 180;
+// // Calculate distance between two lat/lon points (in meters)
+// function calculateDistance(lat1, lon1, lat2, lon2) {
+//   const R = 6371e3; // Earth's radius in meters
+//   const φ1 = lat1 * Math.PI / 180;
+//   const φ2 = lat2 * Math.PI / 180;
+//   const Δφ = (lat2 - lat1) * Math.PI / 180;
+//   const Δλ = (lon2 - lon1) * Math.PI / 180;
 
-  const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
-            Math.cos(φ1) * Math.cos(φ2) *
-            Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+//   const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+//             Math.cos(φ1) * Math.cos(φ2) *
+//             Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+//   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 
-  return R * c; // Distance in meters
-}
+//   return R * c; // Distance in meters
+// }
 
 // Get color based on distance to nearest school
 function getColorByDistance(distance) {
@@ -91,14 +91,25 @@ function getColorByDistance(distance) {
 
 // Calculate minimum distance to any school
 function getMinDistanceToSchool(lat, lon) {
-  if (schoolLocations.length === 0) return null;
-  
+  // Ensure we have schools loaded
+  if (!schoolLocations || schoolLocations.length === 0) return null;
+
+  // Convert hexagon center to a Leaflet LatLng object
+  const hexCenter = L.latLng(lat, lon);
+
   let minDistance = Infinity;
-  schoolLocations.forEach(school => {
-    const dist = calculateDistance(lat, lon, school.lat, school.lon);
+
+  for (const school of schoolLocations) {
+    if (!school || school.lat == null || school.lon == null) continue;
+
+    // Compute geodesic distance (in meters) using Leaflet’s haversine formula
+    const schoolLatLng = L.latLng(school.lat, school.lon);
+    const dist = map.distance(hexCenter, schoolLatLng);
+
     if (dist < minDistance) minDistance = dist;
-  });
-  return minDistance;
+  }
+
+  return minDistance === Infinity ? null : minDistance;
 }
 
 // Debounce function for performance
@@ -160,7 +171,20 @@ function projectHexes() {
     .attr("stroke-width", 0)
     .attr("fill-opacity", 0.7)
     .style("pointer-events", "auto")
-  .attr("cursor", "pointer")
+    .attr("cursor", "pointer")
+        .on("mouseover", function(event, d) {
+      d3.select(this)
+        .attr("fill-opacity", 1)
+        .attr("stroke-width", 1.5);
+    })
+    .on("mouseout", function(event, d) {
+      d3.select(this)
+        .attr("fill-opacity", 0.7)
+        .attr("stroke-width", 0.1)
+        L.popup()
+        map.closePopup()
+
+    })
     .on("click", function(event, d) {
       event.stopPropagation(); // Prevent map click event
       const [x, y] = [event.pageX, event.pageY];
@@ -174,6 +198,7 @@ function projectHexes() {
         )
         .openOn(map);
     })
+
     .merge(hexPaths)
     .attr("fill", d => {
       if (d.schoolDistance === null) return "#69b3a2";
@@ -258,7 +283,7 @@ function updateDisplay() {
 
 // Load precomputed data, GeoJSON, and schools
 Promise.all([
-  d3.json("./kanton.geojson"),
+  d3.json("./kanton1.geojson"),
   d3.json("./hexdata_res1.0.json"),
   d3.json("./schools.geojson")
 ]).then(function ([geoData, precompData, schoolsData]) {
@@ -318,97 +343,17 @@ function drawschools() {
   Promise.all([
     d3.json("./schools.geojson")
   ]).then(function ([data]) {
-    function projectPoint(lon, lat) {
-      const point = map.latLngToLayerPoint([lat, lon]);
-      return [point.x, point.y];
-    }
-
+    // Prepare and flatten the features
     const schools = data.features.map(f => {
       if (f.geometry.type === "Polygon") return f.geometry.coordinates[0][0];
       if (f.geometry.type === "MultiPolygon") return f.geometry.coordinates[0][0][0];
       if (f.geometry.type === "Point") return f.geometry.coordinates;
+      return null;
     }).filter(Boolean);
   })
+  .catch(error => console.error(error));
 }
-
-function apartments() {
-  d3.dsv(";", "./apartments.csv").then(function(apart) {
-    console.log("Raw CSV data:", apart);
-
-    const apartmentsData = apart
-      .filter(d => d.lat && d.lon)
-      .map(d => ({
-        lat: +d.lat,
-        lon: +d.lon,
-        address: d.address || "",
-        price: d.price ? +d.price : null,
-        rooms: d.rooms ? +d.rooms : null,
-        canton: d.canton || ""
-      }));
-
-    console.log("Parsed apartments:", apartmentsData);
-
-    const svg = d3.select(map.getPanes().overlayPane).append("svg")
-      .style("position", "absolute")
-      .style("top", 0)
-      .style("left", 0)
-      .style("pointer-events", "none");
-    
-    const g = svg.append("g").attr("class", "leaflet-zoom-hide");
-
-    const points = g.selectAll("circle.apartment")
-      .data(apartmentsData)
-      .enter()
-      .append("circle")
-      .attr("class", "apartment")
-      .attr("r", 6)
-      .attr("fill", "blue")
-      .attr("fill-opacity", 0.6)
-      .attr("stroke", "white")
-      .attr("stroke-width", 2)
-      .style("pointer-events", "auto")
-      .attr("cursor", "pointer")
-      .on("mouseover", function(event, d) {
-        L.popup()
-          .setLatLng([d.lat, d.lon])
-          .setContent(`
-            <b>${d.address}</b><br>
-            Price: CHF ${d.price}<br>
-            Rooms: ${d.rooms}<br>
-            Canton: ${d.canton}
-          `)
-          .openOn(map);
-      });
-
-    function update() {
-      const bounds = map.getBounds();
-      const topLeft = map.latLngToLayerPoint(bounds.getNorthWest());
-      const bottomRight = map.latLngToLayerPoint(bounds.getSouthEast());
-
-      svg
-        .attr("width", bottomRight.x - topLeft.x)
-        .attr("height", bottomRight.y - topLeft.y)
-        .style("left", topLeft.x + "px")
-        .style("top", topLeft.y + "px");
-
-      g.attr("transform", `translate(${-topLeft.x},${-topLeft.y})`);
-
-      points
-        .attr("cx", d => {
-          const point = map.latLngToLayerPoint([d.lat, d.lon]);
-          return point.x;
-        })
-        .attr("cy", d => {
-          const point = map.latLngToLayerPoint([d.lat, d.lon]);
-          return point.y;
-        });
-    }
-
-    update();
-    map.on("zoomend viewreset moveend", update);
-
-  }).catch(error => console.error(error));
-}
+drawschools()
 
 async function loadGeoTIFF1(filename) {
   try {
