@@ -287,10 +287,15 @@ Promise.all([
   d3.json("./hexdata_res1.0.json"),
   d3.json("./schools.geojson"),
   d3.json("./supermarket.geojson"),
-  d3.json("./retaurants.geojson")
-]).then(function ([geoData, precompData, schoolsData,supermarket,restaurants]) {
+  d3.json("./retaurants.geojson"),
+  d3.json("./acessroad.geojson"),
+]).then(function ([geoData, precompData, schoolsData,supermarket,restaurants,access]) {
   swissData = geoData;
   hexRadiusDeg = precompData.resolution;
+
+  acessroads= access.features
+  console.log('access',acessroads)
+
 
   supermarketLocations = supermarket.features.map(f => {
     let coords;
@@ -300,7 +305,7 @@ Promise.all([
     
     return coords ? { lon: coords[0], lat: coords[1] } : null;
   }).filter(Boolean);
-  console.log(supermarketLocations)
+  console.log(`✅ Loaded ${supermarketLocations.length} supermarket`);
 
     restoLocations = restaurants.features.map(f => {
     let coords;
@@ -310,7 +315,7 @@ Promise.all([
     
     return coords ? { lon: coords[0], lat: coords[1] } : null;
   }).filter(Boolean);
-  console.log(restoLocations)
+  console.log(`✅ Loaded ${restoLocations.length} restaurants`);
 
   
   // Load schools
@@ -405,4 +410,6 @@ async function loadGeoTIFF1(filename) {
     console.error(`❌ Could not load GeoTIFF "${filename}":`, error);
   }
 }
-loadGeoTIFF1('noise_day_2056_wgs84.tif')
+loadGeoTIFF1('railwaynight_wgs84.tif')
+loadGeoTIFF1('air_wgs84.tif')
+
