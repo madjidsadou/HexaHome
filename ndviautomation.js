@@ -391,30 +391,38 @@ async function loadGeoTIFF1(filename) {
     const georaster = await parseGeoraster(arrayBuffer);
     console.log("GeoTIFF info:", georaster);
 
-    // const layer = new GeoRasterLayer({
-    //   georaster,
-    //   opacity: 0.8,
-    //   pixelValuesToColorFn: val => {
-    //     if (val < 0) return null;
-    //     if (val > 1) return "#43ec21ff";
-    //     if (val > 20) return "#cdec21ff";
-    //     if (val > 50) return "#ec2121ff";
-    //   }
-    // });
+    const layer = new GeoRasterLayer({
+      georaster,
+      opacity: 0.8,
+      pixelValuesToColorFn: val => {
+        if (val < 0) return null;
+        if (val > 0) return "#ec2150ff";
+      }
+    });
 
-    // layer.addTo(map);
-    // map.fitBounds(layer.getBounds());
+    layer.addTo(map);
+    map.fitBounds(layer.getBounds());
 
     console.log(`✅ GeoTIFF "${filename}" loaded successfully`);
   } catch (error) {
     console.error(`❌ Could not load GeoTIFF "${filename}":`, error);
   }
 }
-loadGeoTIFF1('railwaynight_wgs84.tif')
-loadGeoTIFF1('air_wgs84.tif')
+
+// loadGeoTIFF1('railnight.tif')
+// loadGeoTIFF1('railday_lowres.tif')
+// loadGeoTIFF1('air_wgs84.tif')
+// loadGeoTIFF1('vegetation_wgs84_lowres50.tif')
+// loadGeoTIFF1('hectometric_map_4326.tif')
+// loadGeoTIFF1('roadday_lowres.tif')
+loadGeoTIFF1('roadnacht_lowres.tif')
+
+
+
 
 Promise.all([
-  d3.csv("./apartments.csv")
+  d3.dsv(';',"./apartmentslink.csv")
   ]).then(function ([data]) {
     console.log('apart',data)
   })
+
