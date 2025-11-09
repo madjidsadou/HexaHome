@@ -45,8 +45,8 @@ CANTONS = [
     'Tessin',           # TI
     'Vaud',             # VD
     'Valais',           # VS
-    'Neuchâtel',        # NE
-    'Genève',           # GE
+    'Neuchatel',        # NE
+    'Geneve',           # GE
     'Jura'              # JU
 ]
 
