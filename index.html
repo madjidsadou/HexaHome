@@ -3,11 +3,23 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Document</title>
+  <title>HexaHome - Swiss Housing Explorer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css">
   <link rel="stylesheet" href="ndviautomation.css">
 </head>
 <body>
+  <!-- Loading Screen -->
+  <div id="loading-screen">
+    <div class="loader-container">
+      <div class="loader"></div>
+      <h2>Loading HexaHome</h2>
+      <p>Preparing your Swiss housing data...</p>
+    </div>
+  </div>
+
   <div class="container">
     <div id="menu">
       <h4 id="toggle-cantons" style="cursor: pointer;">Choose Canton(s) &#9660;</h4>
@@ -39,6 +51,38 @@
         <label><input type="checkbox" value="25"> Geneva</label>
         <label><input type="checkbox" value="26"> Jura</label>
       </div>
+
+  <h4 id="toggle-opacity" style="cursor: pointer;">Hexagon Opacity &#9660;</h4>
+  
+  <div id="opacity-container" style="display: none; padding: 15px 20px; background: white;">
+    <div style="background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%); padding: 14px; border-radius: 10px; border: 2px solid rgba(102, 126, 234, 0.3);">
+      <label style="display: block; margin-bottom: 8px; font-size: 14px; font-weight: 600; color: #495057;">
+        Opacity: <span id="hexagon-opacity-value" style="font-weight: 700; color: #667eea;">0.70</span>
+      </label>
+      <input type="range" id="hexagon-opacity-slider" min="0" max="1" step="0.05" value="0.7" style="width: 100%;">
+    </div>
+  </div>
+
+  <h4 id="toggle-facilities" style="cursor: pointer;">Show Facilities &#9660;</h4>
+  
+  <div id="facilities-list" class="checkbox-group" style="display: none; margin-left: 15px;">
+    <label>
+      <input type="checkbox" id="show-schools" class="facility-checkbox">
+      <span>🏫 Schools</span>
+    </label>
+    <label>
+      <input type="checkbox" id="show-apartments" class="facility-checkbox">
+      <span>🏠 Apartments</span>
+    </label>
+    <label>
+      <input type="checkbox" id="show-restaurants" class="facility-checkbox">
+      <span>🍽️ Restaurants</span>
+    </label>
+    <label>
+      <input type="checkbox" id="show-supermarkets" class="facility-checkbox">
+      <span>🛒 Supermarkets</span>
+    </label>
+  </div>
 
   <h4 id="index" style="cursor: pointer;">Adjust indexes &#9660;</h4>
 
@@ -98,7 +142,35 @@
 
     </div>
 
-    <div id="map">  
+    <div id="map"></div>
+    
+    <div class="map-title">
+      <h1>🏠 HexaHome</h1>
+      <p>Swiss Housing Quality Explorer</p>
+    </div>
+    
+    <div class="legend">
+      <div class="legend-title">📊 Quality Score</div>
+      <div class="legend-item">
+        <div class="legend-color" style="background: #00ff00;"></div>
+        <span>Excellent (80-100%)</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-color" style="background: #bfff00;"></div>
+        <span>Good (60-80%)</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-color" style="background: #ffff00;"></div>
+        <span>Average (40-60%)</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-color" style="background: #ff8000;"></div>
+        <span>Below Avg (20-40%)</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-color" style="background: #ff0000;"></div>
+        <span>Poor (0-20%)</span>
+      </div>
     </div>
   </div>
   <script src="https://cdn.jsdelivr.net/npm/geotiff"></script>
@@ -113,6 +185,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.8.0/proj4.js"></script>
   <script src="https://unpkg.com/georaster-layer-for-leaflet"></script>
   <script src="https://d3js.org/d3-scale-chromatic.v1.min.js"></script>
+  <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
   <script src="ndviautomation.js"></script>
 </body>
 </html>
