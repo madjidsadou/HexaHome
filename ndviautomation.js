@@ -35,7 +35,6 @@ toggleOpacity.addEventListener("click", () => {
   }
 });
 
-// Setup opacity slider immediately
 setTimeout(() => {
   const opacitySlider = document.getElementById('hexagon-opacity-slider');
   const opacityValue = document.getElementById('hexagon-opacity-value');
@@ -296,6 +295,256 @@ let apartmentData = [];
 let hexOpacity = 0.7;
 let apartmentToHexagonMap = new Map(); // Maps apartment ID to hexagon ID
 
+const cantonNameMap = {
+  1: "Zürich",
+  2: "Bern",
+  3: "Luzern",
+  4: "Uri",
+  5: "Schwyz",
+  6: "Obwalden",
+  7: "Nidwalden",
+  8: "Glarus",
+  9: "Zug",
+  10: "Fribourg",
+  11: "Solothurn",
+  12: "Basel-Stadt",
+  13: "Basel-Landschaft",
+  14: "Schaffhausen",
+  15: "Appenzell Ausserrhoden",
+  16: "Appenzell Innerrhoden",
+  17: "St. Gallen",
+  18: "Graubünden",
+  19: "Aargau",
+  20: "Thurgau",
+  21: "Ticino",
+  22: "Vaud",
+  23: "Valais",
+  24: "Neuchâtel",
+  25: "Geneva",
+  26: "Jura"
+};
+
+const cantonAliasLookup = new Map();
+
+const knownPlaces = [
+  { name: 'Lausanne', lat: 46.5197, lon: 6.6323, aliases: ['lausanne'] },
+  { name: 'EPFL', lat: 46.5191, lon: 6.5668, aliases: ['epfl', 'ecole polytechnique federale de lausanne', 'ecole polytechnique federale', 'ecole polytechnique fédérale', 'epfl campus'] },
+  { name: 'Geneva', lat: 46.2044, lon: 6.1432, aliases: ['geneva', 'geneve', 'genève'] },
+  { name: 'Zurich', lat: 47.3769, lon: 8.5417, aliases: ['zurich', 'zürich'] },
+  { name: 'Bern', lat: 46.9481, lon: 7.4474, aliases: ['bern', 'berne'] },
+  { name: 'Basel', lat: 47.5596, lon: 7.5886, aliases: ['basel', 'basle'] },
+  { name: 'Lugano', lat: 46.0037, lon: 8.9511, aliases: ['lugano'] }
+];
+
+const placeLookup = new Map();
+const geocodeCache = new Map();
+const geocodeInFlight = new Map();
+const geocodeQueue = [];
+let geocodeProcessing = false;
+
+function processGeocodeQueue() {
+  if (geocodeProcessing) return;
+  if (!geocodeQueue.length) return;
+
+  geocodeProcessing = true;
+  if (typeof fetch !== 'function') {
+    geocodeQueue.length = 0;
+    geocodeProcessing = false;
+    return;
+  }
+
+  const { normalizedKey, query, resolve, displayName } = geocodeQueue.shift();
+
+  const url = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=0&limit=1&countrycodes=ch&q=${encodeURIComponent(query)}`;
+
+  fetch(url, {
+    headers: {
+      Accept: 'application/json'
+    }
+  })
+    .then(response => {
+      if (!response.ok) {
+        throw new Error(`Geocode error ${response.status}`);
+      }
+      return response.json();
+    })
+    .then(results => {
+      if (Array.isArray(results) && results.length) {
+        const best = results[0];
+        const lat = parseFloat(best.lat);
+        const lon = parseFloat(best.lon);
+        if (!Number.isNaN(lat) && !Number.isNaN(lon)) {
+          const label = best.display_name ? best.display_name.split(',')[0] : query;
+          const aliases = [normalizedKey];
+          if (displayName && displayName !== normalizedKey) {
+            aliases.push(displayName);
+          }
+          if (label && !aliases.includes(label)) {
+            aliases.push(label);
+          }
+          const place = {
+            name: label,
+            lat,
+            lon,
+            source: 'nominatim',
+            aliases
+          };
+          geocodeCache.set(normalizedKey, place);
+          registerPlace(place, place.aliases);
+          resolve(place);
+          return;
+        }
+      }
+      geocodeCache.set(normalizedKey, null);
+      resolve(null);
+    })
+    .catch(error => {
+      console.warn('Geocode lookup failed for', query, error);
+      geocodeCache.set(normalizedKey, null);
+      resolve(null);
+    })
+    .finally(() => {
+      geocodeInFlight.delete(normalizedKey);
+      setTimeout(() => {
+        geocodeProcessing = false;
+        processGeocodeQueue();
+      }, 1200);
+    });
+}
+
+function queueDynamicPlaceLookup(normalizedKey, rawQuery) {
+  if (!normalizedKey) return null;
+  if (placeLookup.has(normalizedKey)) return null;
+  if (geocodeCache.has(normalizedKey)) {
+    const cached = geocodeCache.get(normalizedKey);
+    if (cached) {
+      registerPlace(cached, cached.aliases || []);
+    }
+    return null;
+  }
+
+  if (geocodeInFlight.has(normalizedKey)) {
+    return geocodeInFlight.get(normalizedKey);
+  }
+
+  if (typeof fetch !== 'function') {
+    return null;
+  }
+
+  const trimmedRaw = rawQuery && rawQuery.trim() ? rawQuery.trim() : '';
+  const query = trimmedRaw ? `${trimmedRaw}, Switzerland` : normalizedKey;
+
+  let resolver = null;
+  const promise = new Promise(resolve => {
+    resolver = resolve;
+  });
+
+  geocodeQueue.push({ normalizedKey, query, resolve: resolver, displayName: trimmedRaw || normalizedKey });
+  geocodeInFlight.set(normalizedKey, promise);
+  processGeocodeQueue();
+
+  return promise;
+}
+
+function registerPlace(place, extraAliases = []) {
+  if (!place || place.lat == null || place.lon == null) return;
+  const aliases = Array.isArray(extraAliases) ? extraAliases.slice() : [];
+  if (!aliases.includes(place.name)) {
+    aliases.push(place.name);
+  }
+
+  aliases.forEach(alias => {
+    const normalizedAlias = normalizePlaceToken(alias);
+    if (!normalizedAlias) return;
+    placeLookup.set(normalizedAlias, place);
+    const noSpace = normalizedAlias.replace(/\s+/g, '');
+    placeLookup.set(noSpace, place);
+  });
+}
+
+function normalizeCantonToken(value) {
+  if (!value) return "";
+  return value
+    .toString()
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s.]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+Object.entries(cantonNameMap).forEach(([num, name]) => {
+  const normalized = normalizeCantonToken(name);
+  cantonAliasLookup.set(normalized, { num: parseInt(num, 10), name });
+  const lowerNoSpaces = normalized.replace(/\s+/g, "");
+  cantonAliasLookup.set(lowerNoSpaces, { num: parseInt(num, 10), name });
+});
+
+function normalizePlaceToken(value) {
+  if (!value) return '';
+  return value
+    .toString()
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s.]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+knownPlaces.forEach(place => {
+  registerPlace(place, place.aliases);
+});
+
+[
+  [25, ["geneve", "genf"]],
+  [22, ["lausanne", "waadt"]],
+  [23, ["valais", "wallis"]],
+  [17, ["st gallen", "st.gallen", "sankt gallen"]],
+  [12, ["basel", "basle"]],
+  [13, ["baselland"]],
+  [10, ["fribourg", "freiburg"]],
+  [3, ["lucerne"]],
+  [1, ["zurich"]],
+  [2, ["bern", "berne"]],
+  [19, ["argovia"]],
+  [21, ["ticino", "tesin", "ticinese"]],
+  [24, ["neuchatel"]]
+].forEach(([num, aliases]) => {
+  aliases.forEach(alias => {
+    const normalized = normalizeCantonToken(alias);
+    if (!normalized) return;
+    cantonAliasLookup.set(normalized, { num, name: cantonNameMap[num] });
+    cantonAliasLookup.set(normalized.replace(/\s+/g, ""), { num, name: cantonNameMap[num] });
+  });
+});
+
+const numberFormatter = new Intl.NumberFormat('de-CH');
+const currencyFormatter = new Intl.NumberFormat('de-CH', {
+  style: 'currency',
+  currency: 'CHF',
+  maximumFractionDigits: 0
+});
+
+let apartmentInsights = [];
+let cantonStats = {};
+let countryStats = null;
+let rastersReady = false;
+let insightsReady = false;
+let insightsBuilding = false;
+let pendingChatQueue = [];
+let chatElements = null;
+let chatHasGreeted = false;
+const chatbotState = {
+  lastIntent: null,
+  lastFilters: null,
+  waitingForData: false,
+  pendingGeocodeFollowups: []
+};
+
 // Layer groups for facility markers
 let schoolMarkers = L.layerGroup();
 let apartmentMarkers = L.layerGroup();
@@ -376,6 +625,86 @@ function distanceToScore(distance) {
   if (distance === null) return 0;
   const maxDistance = 5000; // 5km reference
   return Math.exp(-distance / maxDistance);
+}
+
+function formatCurrency(value) {
+  if (value === null || value === undefined || Number.isNaN(value)) return 'N/A';
+  return currencyFormatter.format(Math.round(value));
+}
+
+function formatPercent(value) {
+  if (value === null || value === undefined || Number.isNaN(value)) return '—';
+  return `${Math.round(value * 100)}%`;
+}
+
+function escapeHtml(value) {
+  if (value === null || value === undefined) return '';
+  return value
+    .toString()
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function median(values) {
+  if (!values || values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 0) {
+    return (sorted[mid - 1] + sorted[mid]) / 2;
+  }
+  return sorted[mid];
+}
+
+function getCantonLabel(num) {
+  return cantonNameMap[num] || 'Unknown canton';
+}
+
+function resolveCantonFromText(raw) {
+  if (!raw) return null;
+  const normalized = normalizeCantonToken(raw);
+  if (!normalized) return null;
+  if (cantonAliasLookup.has(normalized)) {
+    return cantonAliasLookup.get(normalized);
+  }
+  const noSpaces = normalized.replace(/\s+/g, '');
+  if (cantonAliasLookup.has(noSpaces)) {
+    return cantonAliasLookup.get(noSpaces);
+  }
+  return null;
+}
+
+function extractCantonsFromText(text) {
+  if (!text) return [];
+  const matches = new Map();
+  const tokens = text.split(/[,;\/]|\band\b|\bet\b|\bund\b/i);
+  tokens.forEach(token => {
+    const canton = resolveCantonFromText(token);
+    if (canton) {
+      matches.set(canton.num, canton);
+    }
+  });
+  if (matches.size) {
+    return Array.from(matches.values());
+  }
+
+  const words = text.split(/\s+/);
+  for (let length = 3; length >= 1; length -= 1) {
+    for (let i = 0; i <= words.length - length; i += 1) {
+      const slice = words.slice(i, i + length).join(' ');
+      const canton = resolveCantonFromText(slice);
+      if (canton) {
+        matches.set(canton.num, canton);
+      }
+    }
+    if (matches.size) {
+      break;
+    }
+  }
+
+  return Array.from(matches.values());
 }
 
 // Sample raster value at a lat/lon point
@@ -1521,6 +1850,1343 @@ let scoreCache = new Map();
 //   map.on('moveend', debounce(drawApartmentMarkers, 300));
 // }
 
+function getCantonNumbersFromFilters(filters) {
+  const allCantonNums = Object.keys(cantonNameMap).map(num => parseInt(num, 10));
+  if (filters && Array.isArray(filters.cantons) && filters.cantons.length) {
+    const unique = new Set();
+    filters.cantons.forEach(item => {
+      if (!item) return;
+      if (typeof item === 'number') {
+        unique.add(item);
+      } else if (item.num) {
+        unique.add(item.num);
+      }
+    });
+    if (unique.size) {
+      return Array.from(unique);
+    }
+  }
+  if (selectedKantonNum && selectedKantonNum.length) {
+    return Array.from(new Set(selectedKantonNum));
+  }
+  return allCantonNums;
+}
+
+function describeCantonList(cantonNums) {
+  const totalCantons = Object.keys(cantonNameMap).length;
+  if (!cantonNums || cantonNums.length === 0 || cantonNums.length === totalCantons) {
+    return 'Switzerland';
+  }
+  const names = cantonNums.map(getCantonLabel);
+  if (names.length === 1) return names[0];
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`;
+}
+
+function detectBudget(text) {
+  if (!text) return null;
+  const numericFromMatch = (value) => {
+    if (!value) return null;
+    let cleaned = value.toString().trim();
+    const multiplierMatch = cleaned.match(/(\d+(?:[.,]\d+)?)\s*(k|kchf|k\s*chf|k\s*fr|k\s*sfr)/i);
+    if (multiplierMatch) {
+      const base = parseFloat(multiplierMatch[1].replace(',', '.'));
+      if (!Number.isNaN(base)) {
+        return Math.round(base * 1000);
+      }
+    }
+
+    cleaned = cleaned.replace(/[^0-9.,']/g, '');
+    cleaned = cleaned.replace(/[',\s]/g, '');
+    if (!cleaned) return null;
+    const numeric = parseInt(cleaned, 10);
+    if (Number.isNaN(numeric)) return null;
+    return numeric;
+  };
+
+  const patterns = [
+    /(\d[\d'\s]{2,})\s*(?:chf|fr|sfr|\.-)/i,
+    /(budget|rent|price|under|below|max|moins|moins de|unter|prix)[^\d]{0,6}(\d[\d'\s]{2,})/i,
+    /(\d[\d'\s]{2,})[^\d]{0,6}(?:chf|fr|sfr)/i,
+    /(\d+(?:[.,]\d+)?)\s*(k|kchf|k\s*chf|k\s*fr|k\s*sfr)/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = pattern.exec(text);
+    if (match) {
+      const candidate = pattern === patterns[3] ? match[0] : match[1] || match[2];
+      const numeric = numericFromMatch(candidate);
+      if (numeric != null && numeric >= 300 && numeric <= 20000) {
+        return numeric;
+      }
+    }
+  }
+
+  return null;
+}
+
+function detectRooms(text) {
+  if (!text) return null;
+  const lower = text.toLowerCase();
+  const roomPattern = /(\d+(?:[.,]\d+)?)\s*(?:room|rooms|bedroom|bedrooms|piece|pieces|pièce|pièces|zimmer|zimmern)/i;
+  const match = roomPattern.exec(lower);
+  if (match && match[1]) {
+    const value = parseFloat(match[1].replace(',', '.'));
+    if (!Number.isNaN(value) && value > 0) {
+      return value;
+    }
+  }
+  if (lower.includes('studio')) return 1;
+  if (lower.includes('family')) return 3;
+  return null;
+}
+
+function detectRoomsFromWords(text) {
+  if (!text) return null;
+  const mapping = {
+    one: 1,
+    une: 1,
+    eins: 1,
+    two: 2,
+    deux: 2,
+    zwei: 2,
+    three: 3,
+    trois: 3,
+    drei: 3,
+    four: 4,
+    quatre: 4,
+    vier: 4,
+    five: 5,
+    cinq: 5,
+    fünf: 5,
+    six: 6,
+    sechs: 6,
+    sieben: 7,
+    sept: 7,
+    seven: 7,
+    acht: 8,
+    huit: 8,
+    eight: 8,
+    neun: 9,
+    neuf: 9,
+    nine: 9,
+    single: 1,
+    double: 2,
+    triple: 3,
+    studio: 1
+  };
+  const lower = text.toLowerCase();
+  return Object.entries(mapping).reduce((found, [word, value]) => {
+    if (found) return found;
+    if (lower.includes(`${word} room`) || lower.includes(`${word}-room`) || lower.includes(`${word} bedroom`)) {
+      return value;
+    }
+    if (lower.includes(`${word} pièce`) || lower.includes(`${word} pieces`) || lower.includes(`${word} pi`)) {
+      return value;
+    }
+    return null;
+  }, null);
+}
+
+function detectPreference(text) {
+  if (!text) return null;
+  const lower = text.toLowerCase();
+  if (/cheapest|low budget|most affordable|affordable|cheap|tight budget|low-cost|low cost/i.test(lower)) return 'cheapest';
+  if (/luxury|high-end|high end|most expensive|expensive|premium|upper class/i.test(lower)) return 'luxury';
+  if (/worst|avoid|bad option|least desirable/i.test(lower)) return 'worst';
+  if (/best|top|great|good|nicest|ideal/i.test(lower)) return 'best';
+  return null;
+}
+
+function detectEnvironmentFocus(text) {
+  if (!text) return null;
+  const lower = text.toLowerCase();
+  if (/quiet|calm|low noise|silent|peaceful|tranquil|calme|ruhig/i.test(lower)) return 'quiet';
+  if (/green|park|vegetation|nature|trees|environment|enviro|air quality|clean air/i.test(lower)) return 'green';
+  return null;
+}
+
+function detectFacilityFocus(text) {
+  if (!text) return null;
+  const lower = text.toLowerCase();
+  if (/school|university|college|campus|ecole|école|uni|schule|hochschule|bibliothèque/i.test(lower)) return 'schools';
+  if (/transport|transit|public transport|bus|train|tram|metro|bahn|gare|station|sbb|cff|vligne|métro|tramway/i.test(lower)) return 'transport';
+  if (/shopping|supermarket|grocery|stores|amenities|magasin|courses|commerce|shopping center|mall|laden|geschäfte/i.test(lower)) return 'amenities';
+  return null;
+}
+
+const intentKeywordSets = {
+  greeting: [
+    /\b(?:hi|hello|hey|yo|salut|bonjour|bonsoir|grüezi|hoi|hallo|ciao|servus|buongiorno|guten\s*(?:morgen|tag|abend)|bon matin)\b/i,
+    /good\s*(?:morning|evening|afternoon)/i
+  ],
+  gratitude: [
+    /(thank you|thanks|merci|danke|gracias|grazie|much appreciated|thx|dankeschön|merci beaucoup)/i
+  ],
+  help: [
+    /(help|aide|hilfe|support|what can you do|how do i|guide me|usage|explain what you do|que peux-tu faire|wie funktioniert)/i
+  ],
+  goodSpots: [
+    /(recommend|suggest|good spot|best place|where should|ideas|tips|spot|find me|looking for|cherche|suche|advisor|show me|propose|empfiehl)/i
+  ],
+  basicStats: [
+    /(stat|statistic|average|median|overview|summary|information|figures|data|analyse|analysis|price level|rent level|trend|distribution|insight)/i
+  ],
+  reset: [
+    /(clear chat|reset|restart|nouvelle requête|neustart)/i
+  ]
+};
+
+const housingTermPattern = /(apartment|appartement|appartment|flat|studio|housing|home|logement|wohnung|immobilier|location|rental|renting|maison|house)/i;
+const statsTermPattern = /(stat|average|median|mean|figures|analyse|analysis|trend|distribution|data|metrics|insight|overview|statistique|statistik)/i;
+
+function extractProximityTargets(text) {
+  if (!text) {
+    return {
+      matches: [],
+      pending: [],
+      missing: []
+    };
+  }
+
+  const normalized = normalizePlaceToken(text);
+  const results = new Map();
+  const pending = [];
+  const missingNames = new Set();
+
+  const proximityPattern = /(closest|near|close to|around|nearby|by|proche de|près de|autour de|vers)\s+([^.,;]+)/gi;
+  let match;
+
+  while ((match = proximityPattern.exec(text)) !== null) {
+    const rawCandidate = match[2] ? match[2].trim() : '';
+    const candidate = rawCandidate ? normalizePlaceToken(rawCandidate) : '';
+    if (!candidate) continue;
+
+    const place = placeLookup.get(candidate) || placeLookup.get(candidate.replace(/\s+/g, ''));
+    if (place) {
+      results.set(place.name, place);
+      continue;
+    }
+
+    const lookupPromise = queueDynamicPlaceLookup(candidate, rawCandidate);
+    if (lookupPromise) {
+      pending.push({ name: rawCandidate, promise: lookupPromise });
+      missingNames.add(rawCandidate);
+    }
+  }
+
+  placeLookup.forEach((place, key) => {
+    if (normalized.includes(key)) {
+      results.set(place.name, place);
+    }
+  });
+
+  // If no explicit proximity keyword but the message ends with a place name
+  if (!results.size) {
+    const trailingPlacePattern = /(?:in|at|around|near|close to|vers|proche de)\s+([^.,;]+)$/i;
+    const trailingMatch = trailingPlacePattern.exec(text);
+    if (trailingMatch && trailingMatch[1]) {
+      const raw = trailingMatch[1].trim();
+      const candidate = normalizePlaceToken(raw);
+      if (candidate) {
+        const place = placeLookup.get(candidate) || placeLookup.get(candidate.replace(/\s+/g, ''));
+        if (place) {
+          results.set(place.name, place);
+        } else {
+          const lookupPromise = queueDynamicPlaceLookup(candidate, raw);
+          if (lookupPromise) {
+            pending.push({ name: raw, promise: lookupPromise });
+            missingNames.add(raw);
+          }
+        }
+      }
+    }
+  }
+
+  return {
+    matches: Array.from(results.values()),
+    pending,
+    missing: Array.from(missingNames)
+  };
+}
+
+function haversineDistanceKm(lat1, lon1, lat2, lon2) {
+  if ([lat1, lon1, lat2, lon2].some(val => val == null || Number.isNaN(val))) {
+    return null;
+  }
+  const toRad = (deg) => (deg * Math.PI) / 180;
+  const R = 6371; // Earth radius in km
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(Math.max(0, 1 - a)));
+  return R * c;
+}
+
+function average(values) {
+  if (!Array.isArray(values) || !values.length) return null;
+  const valid = values.filter(v => v != null && !Number.isNaN(v));
+  if (!valid.length) return null;
+  const sum = valid.reduce((acc, val) => acc + val, 0);
+  return sum / valid.length;
+}
+
+function ensureComparable(value, direction = 'asc') {
+  if (value == null || Number.isNaN(value)) {
+    return direction === 'asc' ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY;
+  }
+  return value;
+}
+
+function compareNumeric(aValue, bValue, direction = 'asc') {
+  const a = ensureComparable(aValue, direction);
+  const b = ensureComparable(bValue, direction);
+  if (a < b) return direction === 'asc' ? -1 : 1;
+  if (a > b) return direction === 'asc' ? 1 : -1;
+  return 0;
+}
+
+function formatDistanceKm(distanceKm) {
+  if (distanceKm == null || Number.isNaN(distanceKm)) return null;
+  if (distanceKm < 0.2) {
+    return `${Math.round(distanceKm * 1000)} m`;
+  }
+  if (distanceKm < 10) {
+    return `${distanceKm.toFixed(1)} km`;
+  }
+  return `${Math.round(distanceKm)} km`;
+}
+
+function extractFiltersFromMessage(message) {
+  const roomsFromWords = detectRoomsFromWords(message);
+  const preference = detectPreference(message);
+  const environmentFocus = detectEnvironmentFocus(message);
+  const facilityFocus = detectFacilityFocus(message);
+  const proximityInfo = extractProximityTargets(message);
+  return {
+    cantons: extractCantonsFromText(message),
+    budget: detectBudget(message),
+    rooms: detectRooms(message) || roomsFromWords,
+    preference,
+    environmentFocus,
+    facilityFocus,
+    proximityTargets: proximityInfo.matches,
+    pendingGeocodes: proximityInfo.pending.map(item => item.promise).filter(Boolean),
+    pendingPlaceNames: proximityInfo.missing
+  };
+}
+
+function determineIntent(message, filters = {}) {
+  const lower = message.toLowerCase();
+  const scores = {
+    greeting: 0,
+    gratitude: 0,
+    help: 0,
+    goodSpots: 0,
+    basicStats: 0,
+    reset: 0,
+    fallback: 0
+  };
+
+  Object.entries(intentKeywordSets).forEach(([intent, patterns]) => {
+    patterns.forEach(pattern => {
+      if (pattern.test(lower)) {
+        scores[intent] += 1;
+      }
+    });
+  });
+
+  if (housingTermPattern.test(lower)) {
+    scores.goodSpots += 2;
+  }
+
+  if (statsTermPattern.test(lower)) {
+    scores.basicStats += 1;
+  }
+
+  if (/(price|rent|cost|afford|prix|coût|kosten)/i.test(lower)) {
+    scores.basicStats += 1;
+  }
+
+  if (filters) {
+    if (filters.budget != null) scores.goodSpots += 1;
+    if (filters.rooms != null) scores.goodSpots += 1;
+    if (filters.preference) scores.goodSpots += 1;
+    if (filters.environmentFocus || filters.facilityFocus) scores.goodSpots += 1;
+    if (filters.proximityTargets && filters.proximityTargets.length) scores.goodSpots += 2;
+  }
+
+  const wordCount = lower.trim().split(/\s+/).filter(Boolean).length;
+
+  const priorityOrder = ['reset', 'gratitude', 'greeting', 'help', 'basicStats', 'goodSpots'];
+
+  const bestIntent = priorityOrder.reduce((chosen, intent) => {
+    if (!chosen) {
+      return scores[intent] > 0 ? intent : null;
+    }
+    const currentScore = scores[intent];
+    const chosenScore = scores[chosen];
+    if (currentScore > chosenScore) {
+      return intent;
+    }
+    return chosen;
+  }, null);
+
+  if (bestIntent && scores[bestIntent] > 0) {
+    if ((bestIntent === 'greeting' || bestIntent === 'gratitude') && scores.goodSpots + scores.basicStats + scores.help === 0 && wordCount <= 6) {
+      return bestIntent;
+    }
+    if (bestIntent === 'reset' && scores.reset > 0) {
+      return 'reset';
+    }
+  }
+
+  if (scores.help >= Math.max(scores.goodSpots, scores.basicStats) && scores.help > 0) {
+    return 'help';
+  }
+  if (scores.basicStats >= scores.goodSpots && scores.basicStats > 0) {
+    return 'basicStats';
+  }
+  if (scores.goodSpots > 0) {
+    return 'goodSpots';
+  }
+  if (scores.greeting > 0 && scores.greeting >= scores.gratitude) {
+    return 'greeting';
+  }
+  if (scores.gratitude > 0) {
+    return 'gratitude';
+  }
+
+  return 'fallback';
+}
+
+function intentRequiresInsights(intent) {
+  return intent === 'basicStats' || intent === 'goodSpots';
+}
+
+function appendChatMessage(role, text, options = {}) {
+  if (!chatElements || !chatElements.messages) return;
+  const wrapper = document.createElement('div');
+  wrapper.className = `chat-message chat-${role}`;
+
+  const bubble = document.createElement('div');
+  bubble.className = 'chat-bubble';
+
+  if (text) {
+    text
+      .split(/\n+/)
+      .map(line => line.trim())
+      .filter(Boolean)
+      .forEach(line => {
+        const paragraph = document.createElement('p');
+        paragraph.textContent = line;
+        bubble.appendChild(paragraph);
+      });
+  }
+
+  if (Array.isArray(options.details) && options.details.length) {
+    const detailsWrap = document.createElement('div');
+    detailsWrap.className = 'chat-details';
+    options.details.forEach(detail => {
+      const span = document.createElement('span');
+      span.textContent = detail;
+      detailsWrap.appendChild(span);
+    });
+    bubble.appendChild(detailsWrap);
+  }
+
+  if (Array.isArray(options.suggestions) && options.suggestions.length) {
+    const suggestionsWrap = document.createElement('div');
+    suggestionsWrap.className = 'chat-suggestions';
+
+    options.suggestions.forEach((suggestion, idx) => {
+      const card = document.createElement('div');
+      card.className = 'chat-suggestion-card';
+
+      const title = document.createElement('strong');
+      title.textContent = `${idx + 1}. ${suggestion.title}`;
+      card.appendChild(title);
+
+      if (Array.isArray(suggestion.meta) && suggestion.meta.length) {
+        const metaWrap = document.createElement('div');
+        metaWrap.className = 'chat-suggestion-meta';
+        suggestion.meta.forEach(metaItem => {
+          const span = document.createElement('span');
+          span.textContent = metaItem;
+          metaWrap.appendChild(span);
+        });
+        card.appendChild(metaWrap);
+      }
+
+      const actions = document.createElement('div');
+      actions.className = 'chat-suggestion-actions';
+
+      if (suggestion.lat != null && suggestion.lon != null) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'chat-suggestion-btn';
+        btn.dataset.lat = suggestion.lat;
+        btn.dataset.lon = suggestion.lon;
+        if (suggestion.price != null) btn.dataset.price = suggestion.price;
+        if (suggestion.rooms != null) btn.dataset.rooms = suggestion.rooms;
+        if (suggestion.address) btn.dataset.address = suggestion.address;
+        if (suggestion.score != null) btn.dataset.score = suggestion.score;
+        if (suggestion.url) btn.dataset.url = suggestion.url;
+        btn.textContent = 'View on map';
+        actions.appendChild(btn);
+      }
+
+      if (suggestion.url) {
+        const link = document.createElement('a');
+        link.href = suggestion.url;
+        link.target = '_blank';
+        link.rel = 'noopener';
+        link.className = 'chat-suggestion-link';
+        link.textContent = 'Open listing';
+        actions.appendChild(link);
+      }
+
+      if (actions.children.length) {
+        card.appendChild(actions);
+      }
+
+      suggestionsWrap.appendChild(card);
+    });
+
+    bubble.appendChild(suggestionsWrap);
+  }
+
+  wrapper.appendChild(bubble);
+  chatElements.messages.appendChild(wrapper);
+  chatElements.messages.scrollTop = chatElements.messages.scrollHeight;
+}
+
+function respondWithHelp() {
+  appendChatMessage('assistant', 'Here\'s how I can help:', {
+    details: [
+      '"Show me rent stats for Vaud" — get averages and ranges.',
+      '"Suggest good spots in Zurich under 2000 CHF" — see top apartments.',
+      'Mention a canton, budget, or rooms to narrow the search.'
+    ]
+  });
+}
+
+function respondWithGreeting() {
+  appendChatMessage('assistant', 'Salut! Grüezi! Hello! Tell me what kind of Swiss home you\'re after and I will pull stats or suggestions. Ask for "help" anytime for examples.');
+}
+
+function respondWithGratitude() {
+  appendChatMessage('assistant', 'Happy to help! Let me know if you want more options or fresh stats.');
+}
+
+function respondWithReset() {
+  chatbotState.lastIntent = null;
+  chatbotState.lastFilters = null;
+  pendingChatQueue = [];
+  appendChatMessage('assistant', 'Starting fresh. Ask me for stats or housing suggestions and I will tailor a new plan.');
+}
+
+function respondWithFallback() {
+  appendChatMessage('assistant', 'I\'m not sure I follow. Try something like "quiet 2 room apartment near Lausanne under 2k", "rent stats for Zurich", or say "help" for a quick cheat sheet. Mention budgets, rooms, quiet/green vibes, transport, or a place you like.');
+}
+
+function createSuggestionPayload(entry) {
+  const titleBase = entry.address ? entry.address : `${entry.cantonName || 'Apartment'} ${formatCurrency(entry.price)}`;
+  const meta = [];
+  if (entry.price != null) meta.push(`${formatCurrency(entry.price)} total`);
+  if (entry.pricePerRoom != null) meta.push(`${formatCurrency(entry.pricePerRoom)} per room`);
+  if (entry.rooms != null) meta.push(`${entry.rooms} room${entry.rooms === 1 ? '' : 's'}`);
+  if (entry.score != null) meta.push(`score ${formatPercent(entry.score)}`);
+  if (entry.recommendationContext && Array.isArray(entry.recommendationContext.highlights)) {
+    entry.recommendationContext.highlights.forEach(highlight => {
+      if (highlight && !meta.includes(highlight)) {
+        meta.push(highlight);
+      }
+    });
+  }
+  return {
+    title: titleBase,
+    meta,
+    lat: entry.lat,
+    lon: entry.lon,
+    url: entry.url,
+    price: entry.price,
+    rooms: entry.rooms,
+    address: entry.address || entry.cantonName || '',
+    score: entry.score,
+    cantonName: entry.cantonName
+  };
+}
+
+function respondWithStats(filters) {
+  if (!insightsReady) {
+    appendChatMessage('assistant', 'Housing stats are still loading. I will share details in a moment.');
+    return;
+  }
+
+  const cantonNums = getCantonNumbersFromFilters(filters);
+  const uniqueNums = Array.from(new Set(cantonNums));
+  const statsList = uniqueNums
+    .map(num => cantonStats[num])
+    .filter(Boolean);
+
+  if (!statsList.length) {
+    if (countryStats) {
+      statsList.push(countryStats);
+    } else {
+      appendChatMessage('assistant', 'I do not have statistics for that area yet. Try another canton.');
+      return;
+    }
+  }
+
+  const areaLabel = describeCantonList(uniqueNums);
+  const intro = `Here\'s a quick snapshot for ${areaLabel}. Ask for suggestions if you want specific apartments.`;
+  const details = statsList.map(stats => {
+    const parts = [];
+    parts.push(`${stats.name}:`);
+    if (stats.avgPricePerRoom != null) {
+      parts.push(`${formatCurrency(stats.avgPricePerRoom)} per room (avg)`);
+    }
+    if (stats.medianPricePerRoom != null) {
+      parts.push(`median ${formatCurrency(stats.medianPricePerRoom)}`);
+    }
+    if (stats.avgScore != null) {
+      parts.push(`score ${formatPercent(stats.avgScore)}`);
+    }
+    parts.push(`${numberFormatter.format(stats.count)} listing${stats.count === 1 ? '' : 's'}`);
+    return parts.join(' • ');
+  });
+
+  appendChatMessage('assistant', intro, { details });
+}
+
+function annotateEntryForFilters(entry, filters) {
+  const details = entry.scoreDetails || {};
+  const distances = details.distances || {};
+
+  const noiseScores = [details.railNight, details.railDay, details.roadNight, details.roadDay];
+  const quietScore = average(noiseScores);
+  const greenScore = details.vegetation != null ? details.vegetation : null;
+
+  const facilityDistancesKm = {
+    schools: distances.schools != null ? distances.schools / 1000 : null,
+    transport: distances.accessRoads != null ? distances.accessRoads / 1000 : null,
+    amenities: null
+  };
+
+  const amenityDistances = [];
+  if (distances.supermarkets != null) amenityDistances.push(distances.supermarkets);
+  if (distances.restaurants != null) amenityDistances.push(distances.restaurants);
+  if (amenityDistances.length) {
+    facilityDistancesKm.amenities = Math.min(...amenityDistances) / 1000;
+  }
+
+  let proximityDistanceKm = null;
+  let proximityName = null;
+  const proximityTargets = Array.isArray(filters?.proximityTargets) ? filters.proximityTargets : [];
+
+  proximityTargets.forEach(target => {
+    if (!target || target.lat == null || target.lon == null) return;
+    const dist = haversineDistanceKm(entry.lat, entry.lon, target.lat, target.lon);
+    if (dist == null || Number.isNaN(dist)) return;
+    if (proximityDistanceKm == null || dist < proximityDistanceKm) {
+      proximityDistanceKm = dist;
+      proximityName = target.name || null;
+    }
+  });
+
+  const highlights = [];
+  if (proximityName && proximityDistanceKm != null) {
+    const distanceLabel = formatDistanceKm(proximityDistanceKm);
+    if (distanceLabel) {
+      highlights.push(`Near ${proximityName} (${distanceLabel})`);
+    }
+  }
+
+  if (filters?.environmentFocus === 'quiet' && quietScore != null) {
+    highlights.push(`Low noise score ${formatPercent(quietScore)}`);
+  } else if (filters?.environmentFocus === 'green' && greenScore != null) {
+    highlights.push(`Green coverage score ${formatPercent(greenScore)}`);
+  }
+
+  if (filters?.facilityFocus) {
+    const focus = filters.facilityFocus;
+    const distanceKm = facilityDistancesKm[focus];
+    if (distanceKm != null) {
+      const labels = {
+        schools: 'closest school',
+        transport: 'transport access',
+        amenities: 'shops & food'
+      };
+      const distanceLabel = formatDistanceKm(distanceKm);
+      if (distanceLabel && labels[focus]) {
+        highlights.push(`${distanceLabel} to ${labels[focus]}`);
+      }
+    }
+  }
+
+  return {
+    quietScore,
+    greenScore,
+    facilityDistancesKm,
+    proximityDistanceKm,
+    proximityName,
+    highlights
+  };
+}
+
+function compareAnnotatedEntries(a, b, filters) {
+  if (filters?.proximityTargets && filters.proximityTargets.length) {
+    const cmp = compareNumeric(a.metrics.proximityDistanceKm, b.metrics.proximityDistanceKm, 'asc');
+    if (cmp !== 0) return cmp;
+  }
+
+  if (filters?.environmentFocus === 'quiet') {
+    const cmp = compareNumeric(a.metrics.quietScore, b.metrics.quietScore, 'desc');
+    if (cmp !== 0) return cmp;
+  } else if (filters?.environmentFocus === 'green') {
+    const cmp = compareNumeric(a.metrics.greenScore, b.metrics.greenScore, 'desc');
+    if (cmp !== 0) return cmp;
+  }
+
+  if (filters?.facilityFocus) {
+    const focus = filters.facilityFocus;
+    const distanceA = a.metrics.facilityDistancesKm ? a.metrics.facilityDistancesKm[focus] : null;
+    const distanceB = b.metrics.facilityDistancesKm ? b.metrics.facilityDistancesKm[focus] : null;
+    const cmp = compareNumeric(distanceA, distanceB, 'asc');
+    if (cmp !== 0) return cmp;
+  }
+
+  const preference = filters?.preference;
+  if (preference === 'cheapest') {
+    const cmpPrice = compareNumeric(a.entry.pricePerRoom, b.entry.pricePerRoom, 'asc');
+    if (cmpPrice !== 0) return cmpPrice;
+    const cmpScore = compareNumeric(a.entry.score, b.entry.score, 'desc');
+    if (cmpScore !== 0) return cmpScore;
+  } else if (preference === 'luxury') {
+    const cmpPrice = compareNumeric(a.entry.pricePerRoom, b.entry.pricePerRoom, 'desc');
+    if (cmpPrice !== 0) return cmpPrice;
+    const cmpScore = compareNumeric(a.entry.score, b.entry.score, 'desc');
+    if (cmpScore !== 0) return cmpScore;
+  } else if (preference === 'worst') {
+    const cmpScore = compareNumeric(a.entry.score, b.entry.score, 'asc');
+    if (cmpScore !== 0) return cmpScore;
+    const cmpPrice = compareNumeric(a.entry.pricePerRoom, b.entry.pricePerRoom, 'desc');
+    if (cmpPrice !== 0) return cmpPrice;
+  } else {
+    const cmpScore = compareNumeric(a.entry.score, b.entry.score, 'desc');
+    if (cmpScore !== 0) return cmpScore;
+    const cmpPrice = compareNumeric(a.entry.pricePerRoom, b.entry.pricePerRoom, 'asc');
+    if (cmpPrice !== 0) return cmpPrice;
+  }
+
+  return compareNumeric(a.entry.price, b.entry.price, 'asc');
+}
+
+function getSuggestions(filters) {
+  const context = {
+    hadProximityTargets: !!(filters?.proximityTargets && filters.proximityTargets.length),
+    usedProximityFilter: false,
+    proximityFallback: false,
+    budgetFallback: false,
+    roomsFallback: false
+  };
+
+  if (!apartmentInsights.length) {
+    return { items: [], context };
+  }
+
+  const cantonNums = getCantonNumbersFromFilters(filters);
+  const totalCantons = Object.keys(cantonNameMap).length;
+  let dataset = apartmentInsights;
+
+  if (cantonNums.length && cantonNums.length < totalCantons) {
+    const cantonSet = new Set(cantonNums);
+    dataset = dataset.filter(item => item.cantonNum != null && cantonSet.has(item.cantonNum));
+  }
+
+  const datasetAfterCantons = dataset;
+
+  let appliedBudget = false;
+  if (filters && filters.budget) {
+    appliedBudget = true;
+    dataset = dataset.filter(item => item.price != null && item.price <= filters.budget);
+    if (!dataset.length) {
+      dataset = datasetAfterCantons;
+      context.budgetFallback = true;
+    }
+  }
+
+  let appliedRooms = false;
+  if (filters && filters.rooms) {
+    appliedRooms = true;
+    dataset = dataset.filter(item => item.rooms != null && item.rooms >= (filters.rooms - 0.25));
+    if (!dataset.length) {
+      dataset = datasetAfterCantons;
+      if (appliedBudget && !context.budgetFallback && filters.budget) {
+        dataset = dataset.filter(item => item.price != null && item.price <= filters.budget);
+      }
+      context.roomsFallback = true;
+    }
+  }
+
+  if (!dataset.length) {
+    dataset = apartmentInsights;
+  }
+
+  const annotated = dataset.map(entry => ({
+    entry,
+    metrics: annotateEntryForFilters(entry, filters)
+  }));
+
+  const comparator = (a, b) => compareAnnotatedEntries(a, b, filters || {});
+
+  const proximityLimitKm = 40;
+  let activeList = annotated;
+  if (context.hadProximityTargets) {
+    const withinLimit = annotated.filter(item => item.metrics.proximityDistanceKm != null && item.metrics.proximityDistanceKm <= proximityLimitKm);
+    if (withinLimit.length) {
+      activeList = withinLimit;
+      context.usedProximityFilter = true;
+    } else {
+      context.proximityFallback = true;
+    }
+  }
+
+  const sorted = activeList.length ? activeList.slice().sort(comparator) : annotated.slice().sort(comparator);
+  const topEntries = sorted.slice(0, 3).map(item => ({
+    ...item.entry,
+    recommendationContext: item.metrics
+  }));
+
+  return {
+    items: topEntries,
+    context
+  };
+}
+
+function respondWithSuggestions(filters) {
+  if (!insightsReady) {
+    appendChatMessage('assistant', 'Still crunching the housing data. I will share suggestions shortly.');
+    return;
+  }
+
+  const { items: suggestions, context: suggestionContext } = getSuggestions(filters || {});
+  const cantonNums = getCantonNumbersFromFilters(filters);
+  const areaLabel = describeCantonList(cantonNums);
+
+  if (!suggestions.length) {
+    if (filters && filters.budget) {
+      appendChatMessage('assistant', `I could not find apartments in ${areaLabel} under ${formatCurrency(filters.budget)}. Try raising the budget or removing filters.`);
+    } else {
+      appendChatMessage('assistant', `I could not find suitable apartments in ${areaLabel} right now. Try another canton or adjust your filters.`);
+    }
+    const pendingNames = Array.isArray(filters?.pendingPlaceNames)
+      ? Array.from(new Set(filters.pendingPlaceNames.filter(name => typeof name === 'string' && name.trim().length)))
+      : [];
+    if (pendingNames.length) {
+      const nameQueue = [...pendingNames];
+      const lastName = nameQueue.pop();
+      const nameText = nameQueue.length ? `${nameQueue.join(', ')}, and ${lastName}` : lastName;
+      appendChatMessage('assistant', `I am still fetching coordinates for ${nameText} via OpenStreetMap. I will refresh the shortlist once that data arrives.`);
+    }
+    return;
+  }
+
+  const introParts = [`Here are some promising spots in ${areaLabel}.`];
+  if (filters && filters.budget) {
+    introParts.push(`Budget cap: ${formatCurrency(filters.budget)}.`);
+    if (suggestionContext && suggestionContext.budgetFallback) {
+      introParts.push('No listings were strictly under that limit, so I surfaced the closest matches.');
+    }
+  }
+  if (filters && filters.rooms) {
+    introParts.push(`Minimum rooms: ${filters.rooms}.`);
+    if (suggestionContext && suggestionContext.roomsFallback) {
+      introParts.push('Room count was relaxed to show nearby options.');
+    }
+  }
+
+  if (filters && filters.preference) {
+    const preferenceMessages = {
+      cheapest: 'Prioritizing the most affordable choices.',
+      luxury: 'Highlighting premium, higher-priced listings.',
+      best: 'Surfacing the top composite scores.',
+      worst: 'Showing the lower-scoring outliers as requested.'
+    };
+    if (preferenceMessages[filters.preference]) {
+      introParts.push(preferenceMessages[filters.preference]);
+    }
+  }
+
+  if (filters && filters.environmentFocus) {
+    if (filters.environmentFocus === 'quiet') {
+      introParts.push('Focusing on calmer, low-noise areas.');
+    } else if (filters.environmentFocus === 'green') {
+      introParts.push('Emphasizing greener surroundings.');
+    }
+  }
+
+  if (filters && filters.facilityFocus) {
+    const facilityMessages = {
+      schools: 'Preferring places close to schools and campuses.',
+      transport: 'Favoring quick transport access.',
+      amenities: 'Keeping daily amenities within easy reach.'
+    };
+    if (facilityMessages[filters.facilityFocus]) {
+      introParts.push(facilityMessages[filters.facilityFocus]);
+    }
+  }
+
+  const pendingPlaceNames = Array.isArray(filters?.pendingPlaceNames)
+    ? filters.pendingPlaceNames.filter(name => typeof name === 'string' && name.trim().length)
+    : [];
+  if (pendingPlaceNames.length) {
+    const uniquePending = Array.from(new Set(pendingPlaceNames.map(name => name.trim())));
+    if (uniquePending.length) {
+      const lastName = uniquePending.pop();
+      const prefix = uniquePending.length ? `${uniquePending.join(', ')}, and ${lastName}` : lastName;
+      introParts.push(`Fetching coordinates for ${prefix} via OpenStreetMap; I'll refine the shortlist as soon as those arrive.`);
+    }
+  }
+
+  if (suggestionContext && suggestionContext.hadProximityTargets) {
+    const names = (filters?.proximityTargets || [])
+      .map(place => place && place.name ? place.name : null)
+      .filter(Boolean);
+    if (names.length) {
+      if (suggestionContext.usedProximityFilter) {
+        introParts.push(`Staying within roughly 40 km of ${names.join(', ')}.`);
+      } else if (suggestionContext.proximityFallback) {
+        introParts.push(`No listings fell within immediate reach of ${names.join(', ')}, so I returned the closest matches I have.`);
+      }
+    }
+  }
+
+  appendChatMessage('assistant', introParts.join(' '), {
+    suggestions: suggestions.map(createSuggestionPayload)
+  });
+}
+
+function respondForIntent(intent, filters) {
+  chatbotState.lastIntent = intent;
+  if (filters) {
+    const stored = { ...filters };
+    if (stored.pendingGeocodes) {
+      delete stored.pendingGeocodes;
+    }
+    chatbotState.lastFilters = stored;
+  } else {
+    chatbotState.lastFilters = null;
+  }
+
+  if (intent === 'reset') {
+    respondWithReset();
+    return;
+  }
+
+  if (intent === 'greeting') {
+    respondWithGreeting();
+    return;
+  }
+
+  if (intent === 'gratitude') {
+    respondWithGratitude();
+    return;
+  }
+
+  if (intent === 'help') {
+    respondWithHelp();
+    return;
+  }
+
+  if (intent === 'basicStats') {
+    respondWithStats(filters);
+    return;
+  }
+
+  if (intent === 'goodSpots') {
+    respondWithSuggestions(filters);
+    return;
+  }
+
+  respondWithFallback();
+}
+
+function handleChatInput(rawInput) {
+  if (!rawInput) return;
+  const message = rawInput.trim();
+  if (!message) return;
+  appendChatMessage('user', message);
+  const filters = extractFiltersFromMessage(message);
+  const pendingGeocodePromises = Array.isArray(filters.pendingGeocodes)
+    ? filters.pendingGeocodes.filter(p => p && typeof p.then === 'function')
+    : [];
+  const pendingPlaceNames = Array.isArray(filters.pendingPlaceNames)
+    ? Array.from(new Set(filters.pendingPlaceNames.filter(name => typeof name === 'string' && name.trim().length)))
+    : [];
+  const intent = determineIntent(message, filters);
+
+  if (intentRequiresInsights(intent) && !insightsReady) {
+    pendingChatQueue.push({ intent, filters });
+    if (!chatbotState.waitingForData) {
+      appendChatMessage('assistant', 'Housing layers are still loading; I will reply with details shortly.');
+      chatbotState.waitingForData = true;
+    }
+    return;
+  }
+
+  chatbotState.waitingForData = false;
+  respondForIntent(intent, filters);
+
+  if (pendingGeocodePromises.length) {
+    const followupToken = {
+      message,
+      intent,
+      initialTargetNames: Array.isArray(filters.proximityTargets)
+        ? filters.proximityTargets.map(place => place && place.name).filter(Boolean)
+        : [],
+      pendingNames: pendingPlaceNames
+    };
+    chatbotState.pendingGeocodeFollowups.push(followupToken);
+
+    Promise.allSettled(pendingGeocodePromises).then(results => {
+      chatbotState.pendingGeocodeFollowups = chatbotState.pendingGeocodeFollowups.filter(token => token !== followupToken);
+
+      const successfulPlaces = results
+        .filter(item => item.status === 'fulfilled' && item.value && item.value.name)
+        .map(item => item.value.name);
+
+      const refreshedFilters = extractFiltersFromMessage(message);
+      const newTargets = Array.isArray(refreshedFilters.proximityTargets) ? refreshedFilters.proximityTargets : [];
+      const initialSet = new Set(followupToken.initialTargetNames);
+      const addedTargets = newTargets.filter(target => target && !initialSet.has(target.name));
+      const addedNames = addedTargets.map(target => target.name).filter(Boolean);
+      const uniqueNewNames = Array.from(new Set([...successfulPlaces, ...addedNames]));
+      const shouldRefresh = intentRequiresInsights(intent);
+
+      if (!uniqueNewNames.length) {
+        if (followupToken.pendingNames.length) {
+          const pendingList = [...followupToken.pendingNames];
+          const last = pendingList.pop();
+          const nameText = pendingList.length ? `${pendingList.join(', ')}, and ${last}` : last;
+          appendChatMessage('assistant', `I could not locate ${nameText} via OpenStreetMap. Try refining the place name or adding a canton.`);
+        }
+        return;
+      }
+
+      const nameList = [...uniqueNewNames];
+      const lastName = nameList.pop();
+      const nameText = nameList.length ? `${nameList.join(', ')}, and ${lastName}` : lastName;
+      if (shouldRefresh) {
+        appendChatMessage('assistant', `I located ${nameText} via OpenStreetMap. Updating the plan with that context.`);
+        respondForIntent(intent, refreshedFilters);
+      } else {
+        appendChatMessage('assistant', `I located ${nameText} via OpenStreetMap. I will keep it in mind for your next housing request.`);
+      }
+    });
+  }
+}
+
+function processPendingChatQueue() {
+  if (!insightsReady || !pendingChatQueue.length) return;
+  const queue = [...pendingChatQueue];
+  pendingChatQueue = [];
+  chatbotState.waitingForData = false;
+  queue.forEach(item => {
+    respondForIntent(item.intent, item.filters);
+  });
+}
+
+function focusOnSuggestion(button) {
+  const lat = parseFloat(button.dataset.lat);
+  const lon = parseFloat(button.dataset.lon);
+  if (Number.isNaN(lat) || Number.isNaN(lon)) return;
+
+  const zoom = Math.max(map.getZoom(), 12);
+  map.flyTo([lat, lon], zoom, { duration: 0.8 });
+
+  const address = button.dataset.address ? escapeHtml(button.dataset.address) : 'Suggested location';
+  const price = button.dataset.price ? formatCurrency(parseFloat(button.dataset.price)) : null;
+  const rooms = button.dataset.rooms ? parseFloat(button.dataset.rooms) : null;
+  const score = button.dataset.score ? Number(button.dataset.score) : null;
+  const url = button.dataset.url ? escapeHtml(button.dataset.url) : null;
+
+  const parts = [`<strong>${address}</strong>`];
+  const meta = [];
+  if (price) meta.push(`Rent: ${escapeHtml(price)}`);
+  if (!Number.isNaN(rooms) && rooms) meta.push(`${escapeHtml(rooms)} room${rooms === 1 ? '' : 's'}`);
+  if (!Number.isNaN(score) && score !== null) meta.push(`Score: ${escapeHtml(formatPercent(score))}`);
+  if (meta.length) {
+    parts.push(`<div>${meta.join(' • ')}</div>`);
+  }
+  if (url) {
+    parts.push(`<div style="margin-top:6px;"><a href="${url}" target="_blank" rel="noopener">Open listing</a></div>`);
+  }
+
+  L.popup()
+    .setLatLng([lat, lon])
+    .setContent(`<div style="font-family: 'Inter', 'Segoe UI', sans-serif; font-size: 13px;">${parts.join('')}</div>`)
+    .openOn(map);
+}
+
+function setupChatbot() {
+  const toggle = document.getElementById('chatbot-toggle');
+  const panel = document.getElementById('chatbot-panel');
+  const closeBtn = document.getElementById('chatbot-close');
+  const form = document.getElementById('chatbot-form');
+  const input = document.getElementById('chatbot-input');
+  const messages = document.getElementById('chatbot-messages');
+
+  if (!toggle || !panel || !form || !input || !messages) {
+    return;
+  }
+
+  chatElements = { toggle, panel, closeBtn, form, input, messages };
+
+  const openPanel = () => {
+    panel.hidden = false;
+    toggle.setAttribute('aria-expanded', 'true');
+    setTimeout(() => input.focus(), 120);
+    if (!chatHasGreeted) {
+      appendChatMessage('assistant', 'Hi! I\'m your Swiss housing guide. Ask for stats or say "suggest good spots in Zurich under 2000 CHF".');
+      chatHasGreeted = true;
+    }
+  };
+
+  const closePanel = () => {
+    panel.hidden = true;
+    toggle.setAttribute('aria-expanded', 'false');
+  };
+
+  toggle.addEventListener('click', () => {
+    if (panel.hidden) openPanel(); else closePanel();
+  });
+
+  if (closeBtn) {
+    closeBtn.addEventListener('click', closePanel);
+  }
+
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const value = input.value;
+    input.value = '';
+    handleChatInput(value);
+  });
+
+  messages.addEventListener('click', (event) => {
+    const button = event.target.closest('.chat-suggestion-btn');
+    if (button) {
+      focusOnSuggestion(button);
+    }
+  });
+}
+
+function buildStatsFromBucket(bucket) {
+  if (!bucket || !bucket.count) return null;
+  const avgPricePerRoom = bucket.sumPricePerRoom / bucket.count;
+  const medianPrice = median(bucket.prices);
+  const minPricePerRoom = bucket.minPricePerRoom !== Infinity ? bucket.minPricePerRoom : null;
+  const maxPricePerRoom = bucket.maxPricePerRoom !== -Infinity ? bucket.maxPricePerRoom : null;
+  const minRent = bucket.minRent !== Infinity ? bucket.minRent : null;
+  const maxRent = bucket.maxRent !== -Infinity ? bucket.maxRent : null;
+  const topQuality = bucket.apartments
+    .filter(ap => ap.score != null)
+    .slice()
+    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+    .slice(0, 5);
+  const topAffordable = bucket.apartments
+    .slice()
+    .sort((a, b) => (a.pricePerRoom ?? Infinity) - (b.pricePerRoom ?? Infinity))
+    .slice(0, 5);
+
+  return {
+    name: bucket.name,
+    num: bucket.num,
+    count: bucket.count,
+    avgPricePerRoom,
+    medianPricePerRoom: medianPrice,
+    minPricePerRoom,
+    maxPricePerRoom,
+    minRent,
+    maxRent,
+    avgScore: bucket.scoreCount ? bucket.scoreSum / bucket.scoreCount : null,
+    topQuality,
+    topAffordable
+  };
+}
+
+function finalizeApartmentInsights(entries, buckets, countryBucket) {
+  apartmentInsights = entries;
+  const stats = {};
+  buckets.forEach(bucket => {
+    if (bucket.num == null) return;
+    const summary = buildStatsFromBucket(bucket);
+    if (summary) {
+      stats[bucket.num] = summary;
+    }
+  });
+
+  cantonStats = stats;
+  countryStats = buildStatsFromBucket(countryBucket);
+  insightsReady = true;
+  insightsBuilding = false;
+  chatbotState.waitingForData = false;
+  processPendingChatQueue();
+}
+
+function buildApartmentInsights() {
+  if (!apartmentData || !apartmentData.length) {
+    insightsReady = false;
+    return;
+  }
+
+  const entries = [];
+  const buckets = new Map();
+  const allBucket = {
+    name: 'Switzerland',
+    num: null,
+    count: 0,
+    sumPricePerRoom: 0,
+    prices: [],
+    minPricePerRoom: Infinity,
+    maxPricePerRoom: -Infinity,
+    minRent: Infinity,
+    maxRent: -Infinity,
+    apartments: [],
+    scoreSum: 0,
+    scoreCount: 0
+  };
+
+  let index = 0;
+  const total = apartmentData.length;
+  const hexRadius = hex.radius();
+
+  const processChunk = () => {
+    const batchSize = 25;
+    let processed = 0;
+
+    while (index < total && processed < batchSize) {
+      const apt = apartmentData[index];
+      index += 1;
+      processed += 1;
+      if (!apt) continue;
+
+      const pricePerRoom = (apt.price && apt.rooms) ? apt.price / apt.rooms : null;
+      let compositeScore = null;
+      let scoreDetails = null;
+      try {
+        const computedScores = calculateCompositeScore(apt.lat, apt.lon, hexRadius, `apt-${index}`, null);
+        if (computedScores && typeof computedScores.composite === 'number' && !Number.isNaN(computedScores.composite)) {
+          compositeScore = computedScores.composite;
+        }
+        if (computedScores) {
+          scoreDetails = computedScores;
+        }
+      } catch (error) {
+        console.warn('Unable to compute composite score for apartment', apt, error);
+      }
+
+      const cantonMatch = resolveCantonFromText(apt.canton) || null;
+      const cantonNum = cantonMatch ? cantonMatch.num : null;
+      const cantonName = cantonMatch ? cantonMatch.name : (apt.canton || 'Switzerland');
+
+      const entry = {
+        lat: apt.lat,
+        lon: apt.lon,
+        price: apt.price,
+        rooms: apt.rooms,
+        pricePerRoom,
+        score: compositeScore,
+        cantonNum,
+        cantonName,
+        address: apt.address || '',
+        url: apt.url || '',
+        source: apt,
+        scoreDetails
+      };
+
+      entries.push(entry);
+
+      const bucketKey = cantonNum != null ? cantonNum : cantonName;
+      let bucket = buckets.get(bucketKey);
+      if (!bucket) {
+        bucket = {
+          name: cantonName,
+          num: cantonNum,
+          count: 0,
+          sumPricePerRoom: 0,
+          prices: [],
+          minPricePerRoom: Infinity,
+          maxPricePerRoom: -Infinity,
+          minRent: Infinity,
+          maxRent: -Infinity,
+          apartments: [],
+          scoreSum: 0,
+          scoreCount: 0
+        };
+        buckets.set(bucketKey, bucket);
+      }
+
+      bucket.count += 1;
+      allBucket.count += 1;
+
+      if (pricePerRoom != null && !Number.isNaN(pricePerRoom)) {
+        bucket.sumPricePerRoom += pricePerRoom;
+        bucket.prices.push(pricePerRoom);
+        bucket.minPricePerRoom = Math.min(bucket.minPricePerRoom, pricePerRoom);
+        bucket.maxPricePerRoom = Math.max(bucket.maxPricePerRoom, pricePerRoom);
+
+        allBucket.sumPricePerRoom += pricePerRoom;
+        allBucket.prices.push(pricePerRoom);
+        allBucket.minPricePerRoom = Math.min(allBucket.minPricePerRoom, pricePerRoom);
+        allBucket.maxPricePerRoom = Math.max(allBucket.maxPricePerRoom, pricePerRoom);
+      }
+
+      if (apt.price != null && !Number.isNaN(apt.price)) {
+        bucket.minRent = Math.min(bucket.minRent, apt.price);
+        bucket.maxRent = Math.max(bucket.maxRent, apt.price);
+
+        allBucket.minRent = Math.min(allBucket.minRent, apt.price);
+        allBucket.maxRent = Math.max(allBucket.maxRent, apt.price);
+      }
+
+      if (compositeScore != null) {
+        bucket.scoreSum += compositeScore;
+        bucket.scoreCount += 1;
+
+        allBucket.scoreSum += compositeScore;
+        allBucket.scoreCount += 1;
+      }
+
+      bucket.apartments.push(entry);
+      allBucket.apartments.push(entry);
+    }
+
+    if (index < total) {
+      scheduleIdleWork(processChunk);
+    } else {
+      finalizeApartmentInsights(entries, buckets, allBucket);
+    }
+  };
+
+  scheduleIdleWork(processChunk);
+}
+
+function maybeBuildApartmentInsights() {
+  if (insightsReady || insightsBuilding) return;
+  if (!rastersReady) return;
+  if (!apartmentData || !apartmentData.length) {
+    insightsReady = true;
+    processPendingChatQueue();
+    return;
+  }
+  insightsBuilding = true;
+  buildApartmentInsights();
+}
+
+setupChatbot();
+
 async function initializeData() {
   const baseDataPromise = Promise.all([
     d3.json("./kanton1.geojson"),
@@ -1608,6 +3274,9 @@ async function initializeData() {
       console.warn(`⚠️ ${failedCount} raster dataset(s) failed to load.`);
     }
 
+    rastersReady = true;
+    maybeBuildApartmentInsights();
+
     setTimeout(() => {
       const loadingScreen = document.getElementById('loading-screen');
       if (loadingScreen) {
@@ -1655,6 +3324,8 @@ async function initializeData() {
     if (apartmentData.length > 0) {
       console.log(`   Sample apartment:`, apartmentData[0]);
     }
+
+    maybeBuildApartmentInsights();
 
     scoreCache.clear();
     projectHexes();

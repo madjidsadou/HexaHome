@@ -197,6 +197,24 @@
         <span>Poor (0-20%)</span>
       </div>
     </div>
+    
+    <div id="chatbot" class="chatbot">
+      <button id="chatbot-toggle" class="chatbot-toggle" aria-expanded="false" aria-controls="chatbot-panel" title="Open housing assistant">💬</button>
+      <div id="chatbot-panel" class="chatbot-panel" hidden>
+        <header class="chatbot-header">
+          <div>
+            <h3>HexaHome Guide</h3>
+            <p>Ask for housing stats or tips.</p>
+          </div>
+          <button id="chatbot-close" class="chatbot-close" type="button" aria-label="Close chat">×</button>
+        </header>
+        <div id="chatbot-messages" class="chatbot-messages" role="log" aria-live="polite"></div>
+        <form id="chatbot-form" class="chatbot-form" autocomplete="off">
+          <input id="chatbot-input" name="chatbot-input" type="text" placeholder="Ask about rent, cantons, or good spots..." required />
+          <button type="submit" class="chatbot-send">Send</button>
+        </form>
+      </div>
+    </div>
   </div>
   <script src="https://cdn.jsdelivr.net/npm/geotiff"></script>
   <script src="https://d3js.org/d3.v4.min.js"></script>
