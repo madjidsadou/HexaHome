@@ -593,7 +593,7 @@ input[type="range"]::-moz-range-thumb:hover {
 
 .chatbot {
   position: fixed;
-  bottom: 30px;
+  bottom: 10px;
   right: 30px;
   height: 400px;
   z-index: 1100;
