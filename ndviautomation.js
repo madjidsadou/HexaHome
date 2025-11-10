@@ -15,10 +15,10 @@ const cantonList = document.getElementById("cantons-list");
 toggle.addEventListener("click", () => {
   if (cantonList.style.display === "none" || cantonList.style.display === "") {
     cantonList.style.display = "block";
-    toggle.innerHTML = "Choose Canton(s) &#9650;";
+    toggle.querySelector('.toggle-arrow').textContent = '▴';
   } else {
     cantonList.style.display = "none";
-    toggle.innerHTML = "Choose Canton(s) &#9660;";
+    toggle.querySelector('.toggle-arrow').textContent = '▾';
   }
 });
 
@@ -28,10 +28,10 @@ const opacityContainer = document.getElementById("opacity-container");
 toggleOpacity.addEventListener("click", () => {
   if (opacityContainer.style.display === "none" || opacityContainer.style.display === "") {
     opacityContainer.style.display = "block";
-    toggleOpacity.innerHTML = "Hexagon Opacity &#9650;";
+    toggleOpacity.querySelector('.toggle-arrow').textContent = '▴';
   } else {
     opacityContainer.style.display = "none";
-    toggleOpacity.innerHTML = "Hexagon Opacity &#9660;";
+    toggleOpacity.querySelector('.toggle-arrow').textContent = '▾';
   }
 });
 
@@ -55,10 +55,10 @@ const facilitiesList = document.getElementById("facilities-list");
 toggleFacilities.addEventListener("click", () => {
   if (facilitiesList.style.display === "none" || facilitiesList.style.display === "") {
     facilitiesList.style.display = "block";
-    toggleFacilities.innerHTML = "Show Facilities &#9650;";
+    toggleFacilities.querySelector('.toggle-arrow').textContent = '▴';
   } else {
     facilitiesList.style.display = "none";
-    toggleFacilities.innerHTML = "Show Facilities &#9660;";
+    toggleFacilities.querySelector('.toggle-arrow').textContent = '▾';
   }
 });
 
@@ -68,12 +68,168 @@ const listind = document.getElementById("sliders-container");
 toggleind.addEventListener("click", () => {
   if (listind.style.display === "none" || listind.style.display === "") {
     listind.style.display = "block";
-    toggleind.innerHTML = "Adjust indexes &#9650;";
+    toggleind.querySelector('.toggle-arrow').textContent = '▴';
   } else {
     listind.style.display = "none";
-    toggleind.innerHTML = "Adjust indexes &#9660;";
+    toggleind.querySelector('.toggle-arrow').textContent = '▾';
   }
 });
+
+const infoIcons = document.querySelectorAll('.info-icon');
+
+if (infoIcons.length) {
+  const tooltipEl = document.createElement('div');
+  tooltipEl.className = 'menu-tooltip';
+  tooltipEl.setAttribute('role', 'tooltip');
+  tooltipEl.setAttribute('aria-hidden', 'true');
+  tooltipEl.setAttribute('data-placement', 'top');
+  document.body.appendChild(tooltipEl);
+
+  let tooltipVisible = false;
+  let activeInfoIcon = null;
+  let lastPointerType = null;
+
+  const spacing = 12;
+  const viewportPadding = 16;
+
+  const hideTooltip = () => {
+    if (!tooltipVisible) return;
+    tooltipVisible = false;
+    delete tooltipEl.dataset.visible;
+    tooltipEl.setAttribute('aria-hidden', 'true');
+    tooltipEl.style.top = '-9999px';
+    tooltipEl.style.left = '-9999px';
+    activeInfoIcon = null;
+  };
+
+  const positionTooltip = (icon) => {
+    if (!tooltipVisible || !icon) return;
+
+    const rect = icon.getBoundingClientRect();
+    const tooltipRect = tooltipEl.getBoundingClientRect();
+
+    let left = rect.left + rect.width / 2 - tooltipRect.width / 2;
+    let top = rect.top - tooltipRect.height - spacing;
+    let placement = 'top';
+
+    if (top < viewportPadding) {
+      placement = 'bottom';
+      top = rect.bottom + spacing;
+    }
+
+    if (placement === 'bottom' && top + tooltipRect.height > window.innerHeight - viewportPadding) {
+      top = Math.max(viewportPadding, window.innerHeight - viewportPadding - tooltipRect.height);
+    }
+
+    if (placement === 'top' && top < viewportPadding) {
+      top = viewportPadding;
+    }
+
+    if (left < viewportPadding) {
+      left = viewportPadding;
+    }
+
+    if (left + tooltipRect.width > window.innerWidth - viewportPadding) {
+      left = window.innerWidth - viewportPadding - tooltipRect.width;
+    }
+
+    tooltipEl.setAttribute('data-placement', placement);
+    tooltipEl.style.top = `${top}px`;
+    tooltipEl.style.left = `${left}px`;
+  };
+
+  const showTooltip = (event) => {
+    const icon = event.currentTarget;
+    const text = icon.getAttribute('data-tooltip');
+    if (!text) return;
+
+    activeInfoIcon = icon;
+    tooltipEl.textContent = text;
+    tooltipEl.style.top = '-9999px';
+    tooltipEl.style.left = '-9999px';
+    tooltipEl.setAttribute('data-placement', 'top');
+    tooltipEl.dataset.visible = 'true';
+    tooltipEl.setAttribute('aria-hidden', 'false');
+    tooltipVisible = true;
+
+    requestAnimationFrame(() => {
+      positionTooltip(icon);
+    });
+  };
+
+  infoIcons.forEach((icon) => {
+    icon.addEventListener('pointerdown', (ev) => {
+      lastPointerType = ev.pointerType;
+    });
+
+    icon.addEventListener('mouseenter', (event) => {
+      if (lastPointerType === 'touch' || lastPointerType === 'pen') return;
+      showTooltip(event);
+    });
+
+    icon.addEventListener('focus', (event) => {
+      if (lastPointerType === 'mouse' || lastPointerType === 'touch' || lastPointerType === 'pen') return;
+      showTooltip(event);
+    });
+
+    icon.addEventListener('mouseleave', hideTooltip);
+    icon.addEventListener('blur', hideTooltip);
+
+    icon.addEventListener('mousemove', () => {
+      if (tooltipVisible && activeInfoIcon === icon) {
+        positionTooltip(icon);
+      }
+    });
+
+    icon.addEventListener('click', (event) => {
+      if (lastPointerType !== 'touch' && lastPointerType !== 'pen') return;
+      event.preventDefault();
+      if (tooltipVisible && activeInfoIcon === icon) {
+        hideTooltip();
+      } else {
+        showTooltip(event);
+      }
+    });
+  });
+
+  window.addEventListener('scroll', () => {
+    if (tooltipVisible && activeInfoIcon) {
+      positionTooltip(activeInfoIcon);
+    }
+  }, true);
+
+  window.addEventListener('resize', () => {
+    if (tooltipVisible && activeInfoIcon) {
+      positionTooltip(activeInfoIcon);
+    }
+  });
+
+  const menuInner = document.querySelector('.menu-inner');
+  if (menuInner) {
+    menuInner.addEventListener('scroll', () => {
+      if (tooltipVisible) {
+        hideTooltip();
+      }
+    }, { passive: true });
+  }
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      hideTooltip();
+    }
+    if (event.key === 'Tab') {
+      lastPointerType = 'keyboard';
+    }
+  });
+
+  document.addEventListener('click', (event) => {
+    if (!tooltipVisible) return;
+    if (activeInfoIcon && (event.target === activeInfoIcon || activeInfoIcon.contains(event.target))) {
+      return;
+    }
+    hideTooltip();
+  });
+}
 
 // Base layer
 L.tileLayer('https://{s}.tile.osm.org/{z}/{x}/{y}.png', {
@@ -84,6 +240,49 @@ L.tileLayer('https://{s}.tile.osm.org/{z}/{x}/{y}.png', {
 L.svg().addTo(map);
 const svg = d3.select(map.getPanes().overlayPane).select("svg");
 const g = svg.append("g").attr("class", "leaflet-zoom-hide");
+
+let activePopup = null;
+let popupCloseTimeout = null;
+
+function cancelPopupClose() {
+  if (popupCloseTimeout) {
+    clearTimeout(popupCloseTimeout);
+    popupCloseTimeout = null;
+  }
+}
+
+function schedulePopupClose() {
+  cancelPopupClose();
+  popupCloseTimeout = setTimeout(() => {
+    if (activePopup) {
+      map.closePopup(activePopup);
+      activePopup = null;
+    }
+  }, 200);
+}
+
+const handlePopupMouseEnter = () => cancelPopupClose();
+const handlePopupMouseLeave = () => schedulePopupClose();
+
+map.on('popupopen', (e) => {
+  activePopup = e.popup;
+  cancelPopupClose();
+  const popupEl = e.popup.getElement();
+  if (popupEl) {
+    popupEl.addEventListener('mouseenter', handlePopupMouseEnter);
+    popupEl.addEventListener('mouseleave', handlePopupMouseLeave);
+  }
+});
+
+map.on('popupclose', (e) => {
+  const popupEl = e.popup.getElement();
+  if (popupEl) {
+    popupEl.removeEventListener('mouseenter', handlePopupMouseEnter);
+    popupEl.removeEventListener('mouseleave', handlePopupMouseLeave);
+  }
+  cancelPopupClose();
+  activePopup = null;
+});
 
 let selectedKantonNum = [];
 let swissData = null;
@@ -764,6 +963,28 @@ async function projectHexes() {
 }
 
 function renderHexPaths(allBins) {
+  const attachHexEvents = (selection) => {
+    return selection
+      .on("mouseover", function(event) {
+        cancelPopupClose();
+        d3.select(this)
+          .transition()
+          .duration(200)
+          .attr("stroke-width", 2.5)
+          .attr("stroke", "#ffffff");
+      })
+      .on("mouseout", function(event) {
+        d3.select(this)
+          .transition()
+          .duration(200)
+          .attr("stroke-width", 0.5);
+        const nextTarget = event.relatedTarget;
+        if (!nextTarget || typeof nextTarget.closest !== 'function' || !nextTarget.closest('.leaflet-popup')) {
+          schedulePopupClose();
+        }
+      });
+  };
+
   const scoreValues = allBins
     .map(bin => (bin && bin.scores ? bin.scores.composite : null))
     .filter(value => typeof value === 'number' && !Number.isNaN(value));
@@ -850,21 +1071,9 @@ function renderHexPaths(allBins) {
     .style("pointer-events", "auto")
     .attr("cursor", "pointer");
 
+  attachHexEvents(enteredPaths);
+
   enteredPaths
-    .on("mouseover", function(event) {
-      d3.select(this)
-        .transition()
-        .duration(200)
-        .attr("stroke-width", 2.5)
-        .attr("stroke", "#ffffff");
-    })
-    .on("mouseout", function() {
-      d3.select(this)
-        .transition()
-        .duration(200)
-        .attr("stroke-width", 0.5);
-      map.closePopup();
-    })
     .on("click", function(event, d) {
       event.stopPropagation();
       const containerPoint = map.mouseEventToContainerPoint(event);
@@ -877,6 +1086,7 @@ function renderHexPaths(allBins) {
         const freshScores = calculateCompositeScore(d.lat, d.lon, hexRadiusPixels, hexId, hexagonPolygon);
 
         if (freshScores) {
+          cancelPopupClose();
           let content = `
           <div style="font-family: 'Segoe UI', Tahoma, sans-serif; max-width: 350px;">
             <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 12px; margin: -10px -10px 10px -10px; border-radius: 5px 5px 0 0;">
@@ -937,9 +1147,15 @@ function renderHexPaths(allBins) {
           `;
 
             freshScores.apartmentData.apartments.slice(0, 10).forEach((apt, idx) => {
+              const safeUrl = apt.url && apt.url !== '#'
+                ? apt.url
+                : null;
+
+              const detailText = `${idx + 1}. ${apt.rooms} rooms - ${apt.price} CHF (${apt.pricePerRoom.toFixed(0)} CHF/room)`;
+
               content += `
               <div style="padding: 4px 0; border-top: 1px solid rgba(255,255,255,0.2);">
-                ${idx + 1}. ${apt.rooms} rooms - ${apt.price} CHF (${apt.pricePerRoom.toFixed(0)} CHF/room)
+                ${safeUrl ? `<a href="${safeUrl}" target="_blank" rel="noopener" style="color: inherit; text-decoration: underline;">${detailText}</a>` : detailText}
               </div>
             `;
             });
@@ -975,6 +1191,8 @@ function renderHexPaths(allBins) {
         }
       }
     });
+
+  attachHexEvents(hexPaths);
 
   enteredPaths
     .attr("fill", computeFill)

@@ -22,7 +22,14 @@
 
   <div class="container">
     <div id="menu">
-      <h4 id="toggle-cantons" style="cursor: pointer;">Choose Canton(s) &#9660;</h4>
+      <div class="menu-inner">
+      <h4 id="toggle-cantons" class="menu-toggle">
+        <span class="toggle-label">Choose Canton(s)</span>
+        <span class="toggle-right">
+          <button type="button" class="info-icon" aria-label="About canton selection" data-tooltip="Select the cantons whose hexagon grids you want to display on the map.">i</button>
+          <span class="toggle-arrow" aria-hidden="true">▾</span>
+        </span>
+      </h4>
       <div id="cantons-list" class="checkbox-group" style="display: none; margin-left: 15px;">
         <label><input type="checkbox" value="1"> Zürich</label>
         <label><input type="checkbox" value="2"> Bern</label>
@@ -52,7 +59,13 @@
         <label><input type="checkbox" value="26"> Jura</label>
       </div>
 
-  <h4 id="toggle-opacity" style="cursor: pointer;">Hexagon Opacity &#9660;</h4>
+  <h4 id="toggle-opacity" class="menu-toggle">
+    <span class="toggle-label">Hexagon Opacity</span>
+    <span class="toggle-right">
+      <button type="button" class="info-icon" aria-label="About hexagon opacity" data-tooltip="Adjust the transparency of the hexagon layer to reveal more or less of the basemap.">i</button>
+      <span class="toggle-arrow" aria-hidden="true">▾</span>
+    </span>
+  </h4>
   
   <div id="opacity-container" style="display: none; padding: 15px 20px; background: white;">
     <div style="background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%); padding: 14px; border-radius: 10px; border: 2px solid rgba(102, 126, 234, 0.3);">
@@ -63,7 +76,13 @@
     </div>
   </div>
 
-  <h4 id="toggle-facilities" style="cursor: pointer;">Show Facilities &#9660;</h4>
+  <h4 id="toggle-facilities" class="menu-toggle">
+    <span class="toggle-label">Show Facilities</span>
+    <span class="toggle-right">
+      <button type="button" class="info-icon" aria-label="About facility markers" data-tooltip="Toggle which facility markers—schools, apartments, restaurants, and supermarkets—are displayed.">i</button>
+      <span class="toggle-arrow" aria-hidden="true">▾</span>
+    </span>
+  </h4>
   
   <div id="facilities-list" class="checkbox-group" style="display: none; margin-left: 15px;">
     <label>
@@ -84,7 +103,13 @@
     </label>
   </div>
 
-  <h4 id="index" style="cursor: pointer;">Adjust indexes &#9660;</h4>
+  <h4 id="index" class="menu-toggle">
+    <span class="toggle-label">Adjust indexes</span>
+    <span class="toggle-right">
+      <button type="button" class="info-icon" aria-label="About index weights" data-tooltip="Fine-tune the weight of each indicator contributing to the composite housing score.">i</button>
+          <span class="toggle-arrow" aria-hidden="true">▾</span>
+    </span>
+  </h4>
 
 <div id="sliders-container" style="display: flex; flex-direction: column; gap: 12px; max-width: 400px;">
 
@@ -138,9 +163,9 @@
     <input type="range" id="employability-slider" min="0" max="100" step="1" value="2">
   </div> -->
 
-</div>
-
     </div>
+  </div>
+</div>
 
     <div id="map"></div>
     
