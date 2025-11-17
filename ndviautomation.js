@@ -294,6 +294,18 @@ let accessRoads = [];
 let apartmentData = [];
 let hexOpacity = 0.7;
 let apartmentToHexagonMap = new Map(); // Maps apartment ID to hexagon ID
+const compareColors = ['#1f77b4', '#ff7f0e'];
+let compareMode = false;
+let compareSelections = [];
+let compareUi = {
+  toggleButton: null,
+  panel: null,
+  status: null,
+  selection: null,
+  summary: null,
+  chart: null,
+  reset: null
+};
 
 const cantonNameMap = {
   1: "Zürich",
@@ -353,7 +365,7 @@ function processGeocodeQueue() {
     return;
   }
 
-  const { normalizedKey, query, resolve, displayName } = geocodeQueue.shift();
+  const { normalizedKey, query, resolve, displayName, options } = geocodeQueue.shift();
 
   const url = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=0&limit=1&countrycodes=ch&q=${encodeURIComponent(query)}`;
 
@@ -391,12 +403,15 @@ function processGeocodeQueue() {
           };
           geocodeCache.set(normalizedKey, place);
           registerPlace(place, place.aliases);
-          resolve(place);
+          const result = options && typeof options.radiusKm === 'number'
+            ? { ...place, radiusKm: options.radiusKm }
+            : place;
+          resolve(result);
           return;
         }
       }
       geocodeCache.set(normalizedKey, null);
-      resolve(null);
+  resolve(null);
     })
     .catch(error => {
       console.warn('Geocode lookup failed for', query, error);
@@ -412,7 +427,7 @@ function processGeocodeQueue() {
     });
 }
 
-function queueDynamicPlaceLookup(normalizedKey, rawQuery) {
+function queueDynamicPlaceLookup(normalizedKey, rawQuery, options = {}) {
   if (!normalizedKey) return null;
   if (placeLookup.has(normalizedKey)) return null;
   if (geocodeCache.has(normalizedKey)) {
@@ -439,7 +454,7 @@ function queueDynamicPlaceLookup(normalizedKey, rawQuery) {
     resolver = resolve;
   });
 
-  geocodeQueue.push({ normalizedKey, query, resolve: resolver, displayName: trimmedRaw || normalizedKey });
+  geocodeQueue.push({ normalizedKey, query, resolve: resolver, displayName: trimmedRaw || normalizedKey, options });
   geocodeInFlight.set(normalizedKey, promise);
   processGeocodeQueue();
 
@@ -545,6 +560,651 @@ const chatbotState = {
   pendingGeocodeFollowups: []
 };
 
+const GEMINI_MODEL = 'gemini-1.5-flash-latest';
+const GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+const GEMINI_TIMEOUT_MS = 9000;
+const GEMINI_INTENT_CANON = {
+  greeting: 'greeting',
+  greet: 'greeting',
+  hello: 'greeting',
+  gratitude: 'gratitude',
+  thanks: 'gratitude',
+  help: 'help',
+  support: 'help',
+  guidance: 'help',
+  stats: 'basicStats',
+  basic_stats: 'basicStats',
+  basicstats: 'basicStats',
+  summary: 'basicStats',
+  overview: 'basicStats',
+  insight: 'basicStats',
+  recommend: 'goodSpots',
+  recommendation: 'goodSpots',
+  suggest: 'goodSpots',
+  shortlist: 'goodSpots',
+  housing: 'goodSpots',
+  reset: 'reset',
+  restart: 'reset'
+};
+let geminiMissingKeyWarned = false;
+
+function getGeminiApiKey() {
+  if (typeof window === 'undefined') return null;
+  if (window.GEMINI_API_KEY && typeof window.GEMINI_API_KEY === 'string' && window.GEMINI_API_KEY.trim()) {
+    return window.GEMINI_API_KEY.trim();
+  }
+  const bodyDatasetKey = document.body && document.body.dataset ? document.body.dataset.geminiKey : null;
+  if (bodyDatasetKey && bodyDatasetKey.trim()) return bodyDatasetKey.trim();
+  const metaTag = document.querySelector('meta[name="gemini-api-key"]');
+  if (metaTag && metaTag.content && metaTag.content.trim()) return metaTag.content.trim();
+  try {
+    const stored = window.localStorage ? window.localStorage.getItem('GEMINI_API_KEY') : null;
+    if (stored && stored.trim()) return stored.trim();
+  } catch (err) {
+    /* ignore */
+  }
+  return null;
+}
+
+function toFiniteNumber(value) {
+  if (value == null) return null;
+  const numeric = typeof value === 'string' ? parseFloat(value.replace(/[^\d.,-]/g, '').replace(',', '.')) : Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  return numeric;
+}
+
+function normalizePreferenceLabel(value) {
+  if (!value) return null;
+  const lower = value.toString().trim().toLowerCase();
+  if (['cheap', 'cheapest', 'budget', 'affordable', 'low'].includes(lower)) return 'cheapest';
+  if (['luxury', 'expensive', 'premium', 'highend', 'high-end'].includes(lower)) return 'luxury';
+  if (['worst', 'avoid', 'low', 'lowscore'].includes(lower)) return 'worst';
+  if (['best', 'top', 'optimal', 'ideal', 'highscore'].includes(lower)) return 'best';
+  return null;
+}
+
+function normalizeEnvironmentLabel(value) {
+  if (!value) return null;
+  const lower = value.toString().trim().toLowerCase();
+  if (['quiet', 'calm', 'silence', 'silent', 'low-noise', 'low noise'].includes(lower)) return 'quiet';
+  if (['green', 'vegetation', 'nature', 'park', 'parks'].includes(lower)) return 'green';
+  return null;
+}
+
+function normalizeFacilityLabel(value) {
+  if (!value) return null;
+  const lower = value.toString().trim().toLowerCase();
+  if (['school', 'schools', 'education', 'campus'].includes(lower)) return 'schools';
+  if (['transport', 'transit', 'public transport', 'bus', 'train', 'mobility'].includes(lower)) return 'transport';
+  if (['shops', 'amenities', 'grocery', 'retail', 'shopping', 'stores'].includes(lower)) return 'amenities';
+  return null;
+}
+
+function mapGeminiIntent(intent, fallbackIntent) {
+  if (!intent) return fallbackIntent || 'fallback';
+  const lower = intent.toString().trim().toLowerCase();
+  if (GEMINI_INTENT_CANON[lower]) {
+    return GEMINI_INTENT_CANON[lower];
+  }
+  if (lower.startsWith('stat')) return 'basicStats';
+  if (lower.startsWith('suggest') || lower.startsWith('recommend')) return 'goodSpots';
+  if (lower.startsWith('help')) return 'help';
+  if (lower.startsWith('greet')) return 'greeting';
+  if (lower.startsWith('thank')) return 'gratitude';
+  if (lower.startsWith('reset') || lower.startsWith('restart')) return 'reset';
+  return fallbackIntent || 'fallback';
+}
+
+function cloneFilterState(baseFilters) {
+  const clone = {
+    cantons: [],
+    budget: baseFilters && baseFilters.budget != null ? baseFilters.budget : null,
+    rooms: baseFilters && baseFilters.rooms != null ? baseFilters.rooms : null,
+    preference: baseFilters && baseFilters.preference ? baseFilters.preference : null,
+    environmentFocus: baseFilters && baseFilters.environmentFocus ? baseFilters.environmentFocus : null,
+    facilityFocus: baseFilters && baseFilters.facilityFocus ? baseFilters.facilityFocus : null,
+    proximityTargets: Array.isArray(baseFilters?.proximityTargets) ? baseFilters.proximityTargets.slice() : [],
+    pendingGeocodes: Array.isArray(baseFilters?.pendingGeocodes) ? baseFilters.pendingGeocodes.slice() : [],
+    pendingPlaceNames: Array.isArray(baseFilters?.pendingPlaceNames) ? baseFilters.pendingPlaceNames.slice() : [],
+    searchRadiusKm: baseFilters && typeof baseFilters.searchRadiusKm === 'number' ? baseFilters.searchRadiusKm : null,
+    priorities: Array.isArray(baseFilters?.priorities) ? baseFilters.priorities.slice() : []
+  };
+  if (Array.isArray(baseFilters?.cantons) && baseFilters.cantons.length) {
+    clone.cantons = baseFilters.cantons.slice();
+  }
+  return clone;
+}
+
+function dedupeArray(items, keyFn) {
+  if (!Array.isArray(items) || !items.length) return [];
+  const seen = new Set();
+  const output = [];
+  items.forEach(item => {
+    const key = keyFn(item);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    output.push(item);
+  });
+  return output;
+}
+
+function resolveGeminiProximityTargets(names) {
+  if (!Array.isArray(names) || !names.length) {
+    return { matches: [], pending: [], missing: [] };
+  }
+  const matches = [];
+  const pending = [];
+  const missing = [];
+  const seen = new Set();
+
+  names.forEach(entry => {
+    const label = typeof entry === 'string'
+      ? entry
+      : entry && (entry.name || entry.label || entry.title || entry.value || entry.place);
+    if (!label) return;
+    const trimmed = label.trim();
+    if (!trimmed) return;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    const normalized = normalizePlaceToken(trimmed);
+    if (!normalized) return;
+
+    const radiusCandidates = [];
+    if (entry && typeof entry === 'object') {
+      ['radius', 'radiusKm', 'radius_km', 'distance', 'maxDistance', 'distanceKm', 'distance_km'].forEach(prop => {
+        if (entry[prop] != null) {
+          const val = toFiniteNumber(entry[prop]);
+          if (val != null) {
+            const propName = prop.toLowerCase();
+            if (propName.includes('meter')) {
+              radiusCandidates.push(val / 1000);
+            } else {
+              radiusCandidates.push(val);
+            }
+          }
+        }
+      });
+    }
+    const radiusKm = radiusCandidates.length ? Math.min(...radiusCandidates.filter(v => v > 0.01)) : null;
+
+    let canonical = placeLookup.get(normalized) || placeLookup.get(normalized.replace(/\s+/g, ''));
+
+    if (!canonical && entry && typeof entry === 'object') {
+      const latCandidate = toFiniteNumber(entry.lat ?? entry.latitude ?? (entry.coordinates && entry.coordinates.lat));
+      const lonCandidate = toFiniteNumber(entry.lon ?? entry.lng ?? entry.long ?? entry.longitude ?? (entry.coordinates && (entry.coordinates.lon ?? entry.coordinates.lng ?? entry.coordinates.long)));
+      if (Number.isFinite(latCandidate) && Number.isFinite(lonCandidate)) {
+        canonical = {
+          name: trimmed,
+          lat: latCandidate,
+          lon: lonCandidate,
+          source: 'gemini-hint'
+        };
+        registerPlace(canonical, [trimmed]);
+      }
+    }
+
+    if (canonical) {
+      matches.push(radiusKm != null ? { ...canonical, radiusKm } : canonical);
+    } else {
+      const lookupPromise = queueDynamicPlaceLookup(normalized, trimmed, { radiusKm });
+      if (lookupPromise) {
+        pending.push({ promise: lookupPromise, radiusKm, name: trimmed });
+      }
+      missing.push(trimmed);
+    }
+  });
+
+  return { matches, pending, missing };
+}
+
+function mergeGeminiFilters(geminiPayload, fallbackFilters) {
+  const merged = cloneFilterState(fallbackFilters || {});
+  const payload = geminiPayload && typeof geminiPayload === 'object' ? geminiPayload : {};
+  const structuredIntent = payload.search_intent || payload.search || payload.searchIntent || null;
+
+  let baseFilters = {};
+  if (structuredIntent && structuredIntent.filters && typeof structuredIntent.filters === 'object') {
+    baseFilters = structuredIntent.filters;
+  } else if (payload && payload.filters && typeof payload.filters === 'object') {
+    baseFilters = payload.filters;
+  } else if (payload && typeof payload === 'object' && (
+    'cantons' in payload ||
+    'budget' in payload ||
+    'rooms' in payload ||
+    'preference' in payload ||
+    'environmentFocus' in payload ||
+    'facilityFocus' in payload ||
+    'proximity' in payload ||
+    'nearby' in payload ||
+    'places' in payload
+  )) {
+    baseFilters = payload;
+  } else {
+    baseFilters = {};
+  }
+
+  const filtersObject = (baseFilters && typeof baseFilters === 'object') ? baseFilters : {};
+  const targetText = structuredIntent && typeof structuredIntent.target === 'string' ? structuredIntent.target : '';
+  const spatialConstraintText = structuredIntent && typeof structuredIntent.spatial_constraint === 'string' ? structuredIntent.spatial_constraint : '';
+  const sortByText = structuredIntent && typeof structuredIntent.sort_by === 'string' ? structuredIntent.sort_by : '';
+  const referenceLocationRaw = structuredIntent ? structuredIntent.reference_location : null;
+
+  const referenceLocations = [];
+  const ingestReference = (value) => {
+    if (!value) return;
+    if (typeof value === 'string') {
+      if (value.trim().length) referenceLocations.push(value.trim());
+      return;
+    }
+    if (typeof value === 'object') {
+      if (typeof value.name === 'string' && value.name.trim().length) referenceLocations.push(value.name.trim());
+      else if (typeof value.label === 'string' && value.label.trim().length) referenceLocations.push(value.label.trim());
+      else if (typeof value.description === 'string' && value.description.trim().length) referenceLocations.push(value.description.trim());
+    }
+  };
+
+  if (Array.isArray(referenceLocationRaw)) {
+    referenceLocationRaw.forEach(ingestReference);
+  } else {
+    ingestReference(referenceLocationRaw);
+  }
+
+  if (Array.isArray(filtersObject.cantons) && filtersObject.cantons.length) {
+    const resolvedCantons = filtersObject.cantons
+      .map(entry => {
+        if (typeof entry === 'number') return entry;
+        if (typeof entry === 'string') return entry;
+        if (entry && typeof entry.name === 'string') return entry.name;
+        if (entry && typeof entry.code === 'string') return entry.code;
+        return null;
+      })
+      .filter(Boolean)
+      .map(value => resolveCantonFromText(value) || (typeof value === 'number' ? { num: value, name: cantonNameMap[value] } : null))
+      .filter(canton => canton && canton.num && canton.name);
+    if (resolvedCantons.length) {
+      merged.cantons = dedupeArray(resolvedCantons, canton => canton.num);
+    }
+  }
+
+  const budgetCandidates = [];
+  const budgetKeys = [
+    'budget', 'budgetMax', 'budget_max', 'budgetUpper', 'budget_upper',
+    'price', 'priceMax', 'price_max', 'priceUpper', 'price_upper', 'max_price', 'maxPrice',
+    'rentMax', 'rent_max', 'maxRent', 'max_rent', 'upper', 'upperBound', 'upper_bound', 'cap', 'maximum', 'max'
+  ];
+
+  budgetKeys.forEach(key => {
+    if (filtersObject[key] != null) {
+      const num = toFiniteNumber(filtersObject[key]);
+      if (num != null) budgetCandidates.push(num);
+    }
+  });
+
+  ['budget', 'price', 'rent', 'cost'].forEach(key => {
+    const block = filtersObject[key];
+    if (!block || typeof block !== 'object') return;
+    ['max', 'maximum', 'upper', 'upperBound', 'upper_bound', 'cap', 'value', 'amount'].forEach(prop => {
+      if (block[prop] != null) {
+        const num = toFiniteNumber(block[prop]);
+        if (num != null) budgetCandidates.push(num);
+      }
+    });
+  });
+
+  if (budgetCandidates.length) {
+    const chosen = Math.min(...budgetCandidates.filter(val => Number.isFinite(val)));
+    if (Number.isFinite(chosen)) {
+      merged.budget = chosen;
+    }
+  }
+
+  const roomCandidates = [];
+  const roomKeys = ['rooms', 'roomCount', 'room_count', 'rooms_min', 'min_rooms', 'minimumRooms', 'bedrooms', 'bedrooms_min', 'minBedrooms'];
+  roomKeys.forEach(key => {
+    if (filtersObject[key] != null) {
+      const num = toFiniteNumber(filtersObject[key]);
+      if (num != null && num > 0) roomCandidates.push(num);
+    }
+  });
+  ['rooms', 'bedrooms'].forEach(key => {
+    const block = filtersObject[key];
+    if (!block || typeof block !== 'object') return;
+    ['min', 'minimum', 'lower', 'atLeast'].forEach(prop => {
+      if (block[prop] != null) {
+        const num = toFiniteNumber(block[prop]);
+        if (num != null && num > 0) roomCandidates.push(num);
+      }
+    });
+  });
+  if (roomCandidates.length) {
+    merged.rooms = roomCandidates.sort((a, b) => a - b)[0];
+  }
+
+  const preference = normalizePreferenceLabel(
+    filtersObject.preference ||
+    filtersObject.priority ||
+    filtersObject.goal
+  );
+  if (preference) {
+    merged.preference = preference;
+  }
+
+  const environment = normalizeEnvironmentLabel(
+    filtersObject.environmentFocus ||
+    filtersObject.environment ||
+    filtersObject.vibe ||
+    filtersObject.ambience
+  );
+  if (environment) {
+    merged.environmentFocus = environment;
+  }
+
+  const facility = normalizeFacilityLabel(
+    filtersObject.facilityFocus ||
+    filtersObject.facilities ||
+    filtersObject.amenities ||
+    filtersObject.transport
+  );
+  if (facility) {
+    merged.facilityFocus = facility;
+  }
+
+  const radiusCandidates = [];
+  const radiusSource = filtersObject.radius ?? filtersObject.radiusKm ?? filtersObject.radius_km ?? filtersObject.distance ?? filtersObject.distanceKm ?? filtersObject.searchRadius;
+  const radiusArray = Array.isArray(radiusSource) ? radiusSource : (radiusSource != null ? [radiusSource] : []);
+  radiusArray.forEach(value => {
+    const numeric = toFiniteNumber(value);
+    if (numeric != null) {
+      const normalized = String(value).toLowerCase().includes('m') ? numeric / 1000 : numeric;
+      if (normalized > 0.01) radiusCandidates.push(normalized);
+    }
+  });
+
+  ['radius', 'distance', 'searchRadius'].forEach(key => {
+    const block = filtersObject[key];
+    if (!block || typeof block !== 'object') return;
+    ['value', 'max', 'upper', 'km', 'radiusKm', 'meters', 'metres'].forEach(prop => {
+      if (block[prop] != null) {
+        const numeric = toFiniteNumber(block[prop]);
+        if (numeric != null) {
+          const needsConversion = prop.toLowerCase().includes('m');
+          radiusCandidates.push(needsConversion ? numeric / 1000 : numeric);
+        }
+      }
+    });
+  });
+
+  if (radiusCandidates.length) {
+    const positiveRadius = radiusCandidates.filter(val => val > 0.01);
+    if (positiveRadius.length) {
+      const selectedRadius = Math.min(...positiveRadius);
+      if (Number.isFinite(selectedRadius)) {
+        merged.searchRadiusKm = selectedRadius;
+      }
+    }
+  }
+
+  if (Array.isArray(filtersObject.priorities) && filtersObject.priorities.length) {
+    const normalizedPriorities = filtersObject.priorities
+      .map(item => (typeof item === 'string' ? item : (item && item.label ? item.label : null)))
+      .filter(Boolean)
+      .map(label => label.toString().trim().toLowerCase())
+      .map(label => {
+        if (['near', 'closest', 'close', 'proche', 'près', 'nearby'].includes(label)) return 'closest';
+        if (['cheap', 'cheapest', 'affordable', 'budget', 'low'].includes(label)) return 'cheapest';
+        if (['luxury', 'expensive', 'premium'].includes(label)) return 'luxury';
+        if (['best', 'top', 'optimal', 'ideal'].includes(label)) return 'best';
+        if (['worst', 'avoid', 'low'].includes(label)) return 'worst';
+        if (['quiet', 'calm', 'silence'].includes(label)) return 'quiet';
+        if (['green', 'nature', 'park'].includes(label)) return 'green';
+        if (['schools', 'education', 'school'].includes(label)) return 'schools';
+        if (['transport', 'transit', 'mobility'].includes(label)) return 'transport';
+        if (['amenities', 'shops', 'shopping', 'grocery'].includes(label)) return 'amenities';
+        if (['farthest', 'furthest'].includes(label)) return 'farthest';
+        return label;
+      })
+      .filter(Boolean);
+    if (normalizedPriorities.length) {
+      merged.priorities = dedupeArray(merged.priorities.concat(normalizedPriorities), key => key);
+    }
+  }
+
+  const legacyProximitySource = filtersObject.proximity || filtersObject.places || filtersObject.nearby || filtersObject.near;
+  const legacyProximityArray = Array.isArray(legacyProximitySource) ? legacyProximitySource : (legacyProximitySource ? [legacyProximitySource] : []);
+  if (legacyProximityArray.length) {
+    const proximityResult = resolveGeminiProximityTargets(legacyProximityArray);
+    if (proximityResult.matches.length) {
+      merged.proximityTargets = merged.proximityTargets.concat(proximityResult.matches);
+      const radiusFromMatches = proximityResult.matches
+        .map(item => item && item.radiusKm)
+        .filter(val => typeof val === 'number' && val > 0.01);
+      if (radiusFromMatches.length) {
+        const minRadius = Math.min(...radiusFromMatches);
+        if (Number.isFinite(minRadius)) {
+          if (merged.searchRadiusKm == null || minRadius < merged.searchRadiusKm) {
+            merged.searchRadiusKm = minRadius;
+          }
+        }
+      }
+    }
+    if (proximityResult.pending.length) {
+      merged.pendingGeocodes = merged.pendingGeocodes.concat(proximityResult.pending);
+    }
+    if (proximityResult.missing.length) {
+      merged.pendingPlaceNames = merged.pendingPlaceNames.concat(proximityResult.missing);
+    }
+  }
+
+  // Structured intent enrichment
+  if (targetText) {
+    const inferredPreference = detectPreference(targetText);
+    if (!merged.preference && inferredPreference) {
+      merged.preference = inferredPreference;
+    }
+    if (!merged.environmentFocus) {
+      const inferredEnv = detectEnvironmentFocus(targetText);
+      if (inferredEnv) merged.environmentFocus = inferredEnv;
+    }
+    if (!merged.facilityFocus) {
+      const inferredFacility = detectFacilityFocus(targetText);
+      if (inferredFacility) merged.facilityFocus = inferredFacility;
+    }
+    const targetPriorities = extractPriorityKeywords(targetText);
+    if (targetPriorities.length) {
+      merged.priorities = dedupeArray(merged.priorities.concat(targetPriorities), key => key);
+    }
+  }
+
+  if (spatialConstraintText) {
+    const spatialPriorities = extractPriorityKeywords(spatialConstraintText);
+    if (spatialPriorities.length) {
+      merged.priorities = dedupeArray(merged.priorities.concat(spatialPriorities), key => key);
+    }
+    const radiusFromSpatial = detectRadiusInKm(spatialConstraintText);
+    if (radiusFromSpatial && (merged.searchRadiusKm == null || radiusFromSpatial < merged.searchRadiusKm)) {
+      merged.searchRadiusKm = radiusFromSpatial;
+    }
+  }
+
+  if (Array.isArray(referenceLocations) && referenceLocations.length) {
+    const syntheticLocationText = referenceLocations.map(name => `near ${name}`).join('. ');
+    const proximityResult = extractProximityTargets([syntheticLocationText, spatialConstraintText].filter(Boolean).join('. '));
+    if (proximityResult.matches.length) {
+      merged.proximityTargets = merged.proximityTargets.concat(proximityResult.matches);
+    }
+    if (proximityResult.pending.length) {
+      merged.pendingGeocodes = merged.pendingGeocodes.concat(proximityResult.pending);
+    }
+    if (proximityResult.missing.length) {
+      merged.pendingPlaceNames = merged.pendingPlaceNames.concat(proximityResult.missing);
+    }
+  }
+
+  if (sortByText) {
+    const normalizedSort = sortByText.toLowerCase();
+    const priorityHints = [];
+    if (normalizedSort === 'distance_asc') priorityHints.push('closest');
+    if (normalizedSort === 'distance_desc') priorityHints.push('farthest');
+    if (normalizedSort.includes('price') && normalizedSort.includes('asc')) priorityHints.push('cheapest');
+    if (normalizedSort.includes('price') && normalizedSort.includes('desc')) priorityHints.push('luxury');
+    if (normalizedSort.includes('score') && normalizedSort.includes('desc')) priorityHints.push('best');
+    if (normalizedSort.includes('score') && normalizedSort.includes('asc')) priorityHints.push('worst');
+    if (priorityHints.length) {
+      merged.priorities = dedupeArray(merged.priorities.concat(priorityHints), key => key);
+    }
+  }
+
+  merged.proximityTargets = dedupeArray(merged.proximityTargets, item => `${item.lat}|${item.lon}|${item.name || ''}|${item.radiusKm || 'na'}`);
+  merged.pendingGeocodes = dedupeArray(merged.pendingGeocodes, item => item && item.promise ? item.promise : item);
+  merged.pendingPlaceNames = dedupeArray(merged.pendingPlaceNames, item => (item && typeof item === 'string') ? item.toLowerCase() : null);
+
+  return merged;
+}
+
+function buildGeminiPrompt(message, fallback) {
+  const fallbackIntent = fallback && fallback.fallbackIntent ? fallback.fallbackIntent : 'fallback';
+  const fallbackFilters = fallback && fallback.fallbackFilters ? fallback.fallbackFilters : null;
+  const fallbackSummary = fallbackFilters ? {
+    cantons: Array.isArray(fallbackFilters.cantons) ? fallbackFilters.cantons.map(c => c && c.name ? c.name : c).filter(Boolean) : [],
+    budget: fallbackFilters.budget ?? null,
+    rooms: fallbackFilters.rooms ?? null,
+    preference: fallbackFilters.preference ?? null,
+    environmentFocus: fallbackFilters.environmentFocus ?? null,
+    facilityFocus: fallbackFilters.facilityFocus ?? null,
+    proximityNames: Array.isArray(fallbackFilters.proximityTargets) ? fallbackFilters.proximityTargets.map(p => p && p.name).filter(Boolean) : []
+  } : null;
+
+  const instructions = [
+    'You are a House Search Assistant integrated into an interactive map.',
+    'Your job is to parse any housing or spatial request and emit structured JSON that downstream code can execute without guesswork.',
+    'Responsibilities:',
+    '- Interpret vague or incomplete phrasing and resolve the user\'s true target (houses, apartments, listings, schools, landmarks, neighbourhoods, etc.).',
+    '- Detect spatial intent (closest, farthest, within distances, near/around/beside, inside/outside, between points).',
+    '- Extract attribute filters (price ranges, size, bedrooms, amenities, scores, property type, year built).',
+    '- Capture any reference locations (schools, universities, landmarks, cities, addresses, coordinates, "my location").',
+    'Output format:',
+    '- Return strictly valid JSON with top-level keys: intent, normalized_prompt, notes, search_intent.',
+    '- search_intent must include: target, spatial_constraint, filters, sort_by, limit, reference_location.',
+    '- Use empty strings, empty objects, or null when a field is missing.',
+    '- Place canonical filter fields inside search_intent.filters (price_min, price_max, rooms_min, rooms_max, amenities, property_type, etc.).',
+    'Rules:',
+    '- For "closest" queries set search_intent.sort_by = "distance_asc" and search_intent.limit = 1.',
+    '- For "farthest" queries set search_intent.sort_by = "distance_desc" and search_intent.limit = 1.',
+    '- For list/browse requests leave search_intent.limit empty.',
+    '- Normalize any mentioned place into search_intent.reference_location.',
+    '- If the request is ambiguous, describe the needed clarification in notes instead of inventing data.',
+    '- Never include commentary outside JSON.'
+  ].join('\n');
+
+  const contextLines = [
+    instructions,
+    `Heuristic intent guess: ${fallbackIntent}`,
+    fallbackSummary ? `Heuristic filters: ${JSON.stringify(fallbackSummary)}` : 'Heuristic filters: {}',
+    'User message:',
+    '<<USER_MESSAGE>>',
+    message,
+    '<<END_USER_MESSAGE>>'
+  ];
+
+  return {
+    systemInstruction: {
+      role: 'system',
+      parts: [{ text: 'You output compact JSON payloads for downstream parsers.' }]
+    },
+    contents: [
+      {
+        role: 'user',
+        parts: [{ text: contextLines.join('\n') }]
+      }
+    ],
+    generationConfig: {
+      temperature: 0.2,
+      topP: 0.8,
+      topK: 40,
+      maxOutputTokens: 512,
+      responseMimeType: 'application/json'
+    }
+  };
+}
+
+function extractGeminiJsonText(data) {
+  if (!data || !Array.isArray(data.candidates) || !data.candidates.length) return null;
+  const candidate = data.candidates.find(item => item && item.content && Array.isArray(item.content.parts));
+  if (!candidate) return null;
+  const textPart = candidate.content.parts.find(part => typeof part.text === 'string' && part.text.trim().length);
+  return textPart ? textPart.text.trim() : null;
+}
+
+async function normalizeChatQueryWithGemini(message, fallback = {}) {
+  if (typeof fetch !== 'function') return null;
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    if (!geminiMissingKeyWarned) {
+      console.warn('Gemini API key not found. Skipping Gemini normalization.');
+      geminiMissingKeyWarned = true;
+    }
+    return null;
+  }
+
+  const body = buildGeminiPrompt(message, fallback);
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const timeoutId = controller ? setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS) : null;
+
+  try {
+    const response = await fetch(`${GEMINI_ENDPOINT}?key=${encodeURIComponent(apiKey)}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body),
+      signal: controller ? controller.signal : undefined
+    });
+    if (timeoutId) clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      console.warn('Gemini response not OK:', response.status, response.statusText);
+      return null;
+    }
+
+    const data = await response.json();
+    const jsonText = extractGeminiJsonText(data);
+    if (!jsonText) {
+      console.warn('Gemini returned empty payload.');
+      return null;
+    }
+
+    let parsed;
+    try {
+      parsed = JSON.parse(jsonText);
+    } catch (err) {
+      console.warn('Gemini payload parsing failed:', err, jsonText);
+      return null;
+    }
+
+    const resolvedIntent = mapGeminiIntent(parsed.intent, fallback.fallbackIntent);
+    const mergedFilters = mergeGeminiFilters(parsed, fallback.fallbackFilters);
+    const normalizedPrompt = typeof parsed.normalized_prompt === 'string' ? parsed.normalized_prompt.trim() : null;
+    const notesRaw = Array.isArray(parsed.notes) ? parsed.notes : (parsed.notes ? [parsed.notes] : []);
+    const notes = notesRaw.map(item => item && item.toString().trim()).filter(Boolean);
+    return {
+      intent: resolvedIntent,
+      filters: mergedFilters,
+      normalizedPrompt,
+      notes,
+      raw: parsed
+    };
+  } catch (error) {
+    if (timeoutId) clearTimeout(timeoutId);
+    if (error.name === 'AbortError') {
+      console.warn('Gemini request timed out.');
+    } else {
+      console.warn('Gemini request failed:', error);
+    }
+    return null;
+  }
+}
+
 // Layer groups for facility markers
 let schoolMarkers = L.layerGroup();
 let apartmentMarkers = L.layerGroup();
@@ -646,6 +1306,75 @@ function escapeHtml(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function buildFilterSummaryMessage(filters) {
+  if (!filters || typeof filters !== 'object') return null;
+  const parts = [];
+
+  if (Array.isArray(filters.cantons) && filters.cantons.length) {
+    const cantonNames = Array.from(new Set(filters.cantons.map(canton => {
+      if (!canton) return null;
+      if (typeof canton === 'string') return canton.trim();
+      if (typeof canton.name === 'string') return canton.name.trim();
+      if (typeof canton.code === 'string') return canton.code.trim();
+      if (typeof canton.num === 'number' && cantonNameMap[canton.num]) return cantonNameMap[canton.num];
+      return null;
+    }).filter(Boolean)));
+    if (cantonNames.length) {
+      parts.push(`focus on ${cantonNames.join(', ')}`);
+    }
+  }
+
+  if (filters.budget != null && Number.isFinite(filters.budget)) {
+    parts.push(`budget cap ${formatCurrency(filters.budget)}`);
+  }
+
+  if (filters.rooms != null && Number.isFinite(filters.rooms)) {
+    parts.push(`at least ${filters.rooms} room${filters.rooms === 1 ? '' : 's'}`);
+  }
+
+  if (filters.preference) {
+    parts.push(`preference ${filters.preference}`);
+  }
+
+  if (filters.environmentFocus) {
+    parts.push(`environment focus ${filters.environmentFocus}`);
+  }
+
+  if (filters.facilityFocus) {
+    parts.push(`facility focus ${filters.facilityFocus}`);
+  }
+
+  if (Array.isArray(filters.priorities) && filters.priorities.length) {
+  parts.push(`priorities ${filters.priorities.join(' -> ')}`);
+  }
+
+  const placeNames = new Set();
+  if (Array.isArray(filters.proximityTargets)) {
+    filters.proximityTargets.forEach(target => {
+      if (target && typeof target.name === 'string') {
+        placeNames.add(target.name);
+      }
+    });
+  }
+  if (Array.isArray(filters.pendingPlaceNames)) {
+    filters.pendingPlaceNames.forEach(name => {
+      if (typeof name === 'string' && name.trim()) {
+        placeNames.add(name.trim());
+      }
+    });
+  }
+  if (placeNames.size) {
+    parts.push(`places ${Array.from(placeNames).join(', ')}`);
+  }
+
+  if (filters.searchRadiusKm != null && Number.isFinite(filters.searchRadiusKm) && filters.searchRadiusKm > 0) {
+    parts.push(`radius ${filters.searchRadiusKm.toFixed(1)} km`);
+  }
+
+  if (!parts.length) return null;
+  return `Here is what I picked up: ${parts.join('; ')}.`;
 }
 
 function median(values) {
@@ -1113,6 +1842,461 @@ function getColorByScore(normalized) {
   return `rgb(${r}, ${g}, ${b})`;
 }
 
+function getHexIdentifierFromBin(bin) {
+  if (!bin) return null;
+  const cantonPart = bin.cantonNum != null ? bin.cantonNum : 'na';
+  const xValue = typeof bin.x === 'number' ? bin.x.toFixed(1) : (typeof bin.svgX === 'number' ? bin.svgX.toFixed(1) : '0');
+  const yValue = typeof bin.y === 'number' ? bin.y.toFixed(1) : (typeof bin.svgY === 'number' ? bin.svgY.toFixed(1) : '0');
+  return `${cantonPart}-${xValue}-${yValue}`;
+}
+
+function getCompareSlotIndex(hexId) {
+  if (!hexId) return -1;
+  return compareSelections.findIndex(selection => selection && selection.id === hexId);
+}
+
+function getCompareStrokeColor(slotIndex) {
+  return compareColors[slotIndex] || '#343a40';
+}
+
+function getSelectionLetter(index) {
+  return String.fromCharCode(65 + index);
+}
+
+function formatScorePercent(value) {
+  if (value == null || Number.isNaN(value)) return 'N/A';
+  return `${(value * 100).toFixed(1)}%`;
+}
+
+function getSelectionLabel(selection, index) {
+  const cantonName = selection && selection.cantonNum ? getCantonLabel(selection.cantonNum) : 'Unknown canton';
+  return `${getSelectionLetter(index)} · ${cantonName}`;
+}
+
+function refreshSelectionScores() {
+  if (!compareSelections.length) return;
+  compareSelections.forEach(selection => {
+    if (!selection || selection.lat == null || selection.lon == null) return;
+    const radius = selection.hexRadiusPixels != null ? selection.hexRadiusPixels : hex.radius();
+    const layerPoint = map.latLngToLayerPoint([selection.lat, selection.lon]);
+    const polygon = createHexagonPolygon(layerPoint.x, layerPoint.y, radius);
+    selection.scores = calculateCompositeScore(selection.lat, selection.lon, radius, selection.id, polygon);
+  });
+}
+
+function applyCompareSelectionStyles() {
+  if (!g) return;
+  const selection = g.selectAll('path.hex');
+  if (!selection.size()) return;
+
+  selection.each(function(d) {
+    const hexId = getHexIdentifierFromBin(d);
+    const slotIndex = getCompareSlotIndex(hexId);
+    const element = d3.select(this);
+    if (slotIndex >= 0) {
+      element
+        .classed('hex-compare-selected', true)
+        .attr('data-compare-slot', slotIndex + 1)
+        .attr('stroke', getCompareStrokeColor(slotIndex))
+        .attr('stroke-width', element.classed('hex-hovering') ? 4 : 3);
+    } else {
+      element
+        .classed('hex-compare-selected', false)
+        .attr('data-compare-slot', null);
+      if (!element.classed('hex-hovering')) {
+        element
+          .attr('stroke', '#ffffff')
+          .attr('stroke-width', 0.5);
+      }
+    }
+  });
+}
+
+function buildComparisonSummaryText() {
+  if (!compareSelections.length) {
+    return 'No hexagons selected yet.';
+  }
+
+  refreshSelectionScores();
+
+  if (compareSelections.length === 1) {
+    const first = compareSelections[0];
+    return `${getSelectionLabel(first, 0)} scores ${formatScorePercent(first.scores ? first.scores.composite : null)}. Pick another hexagon to unlock the dashboard.`;
+  }
+
+  const [first, second] = compareSelections;
+  const compositeA = first.scores ? first.scores.composite : null;
+  const compositeB = second.scores ? second.scores.composite : null;
+  const diff = (compositeB ?? 0) - (compositeA ?? 0);
+  const leaderIndex = diff >= 0 ? 1 : 0;
+  const leader = compareSelections[leaderIndex];
+  const trailing = compareSelections[leaderIndex === 0 ? 1 : 0];
+  const diffText = `${diff >= 0 ? '+' : ''}${(Math.abs(diff) * 100).toFixed(1)} pts`;
+  let summary = `${getSelectionLabel(leader, leaderIndex)} leads composite by ${diffText} (${formatScorePercent(leader.scores ? leader.scores.composite : null)} vs ${formatScorePercent(trailing.scores ? trailing.scores.composite : null)}).`;
+
+  const metricDefs = [
+    { key: 'schools', label: 'Schools' },
+    { key: 'supermarkets', label: 'Supermarkets' },
+    { key: 'restaurants', label: 'Restaurants' },
+    { key: 'accessRoads', label: 'Access Roads' },
+    { key: 'vegetation', label: 'Vegetation' },
+    { key: 'airNoise', label: 'Air Quality' },
+    { key: 'railNight', label: 'Rail Noise (Night)' },
+    { key: 'roadNight', label: 'Road Noise (Night)' },
+    { key: 'apartmentCost', label: 'Affordability' }
+  ];
+
+  let standout = null;
+  metricDefs.forEach(def => {
+    const a = first.scores ? first.scores[def.key] : null;
+    const b = second.scores ? second.scores[def.key] : null;
+    if (a == null || b == null) return;
+    const delta = (b - a) * 100;
+    const absDelta = Math.abs(delta);
+    if (standout === null || absDelta > standout.absDelta) {
+      standout = {
+        label: def.label,
+        delta,
+        absDelta,
+        winnerIndex: delta > 0 ? 1 : delta < 0 ? 0 : -1
+      };
+    }
+  });
+
+  if (standout && standout.absDelta >= 0.5 && standout.winnerIndex !== -1) {
+    const winner = compareSelections[standout.winnerIndex];
+    summary += ` Biggest gap: ${getSelectionLabel(winner, standout.winnerIndex)} outperforms in ${standout.label} by ${standout.delta >= 0 ? '+' : ''}${standout.delta.toFixed(1)} pts.`;
+  }
+
+  return summary;
+}
+
+function renderComparisonChart() {
+  if (!compareUi.chart) return;
+  compareUi.chart.innerHTML = '';
+
+  if (compareSelections.length < 2) {
+    compareUi.chart.innerHTML = '<div class="compare-empty">Pick two hexagons to unlock the analytics dashboard.</div>';
+    return;
+  }
+
+  refreshSelectionScores();
+
+  const [first, second] = compareSelections;
+  const metrics = [
+    { key: 'composite', label: 'Composite' },
+    { key: 'schools', label: 'Schools' },
+    { key: 'supermarkets', label: 'Supermarkets' },
+    { key: 'restaurants', label: 'Restaurants' },
+    { key: 'accessRoads', label: 'Access Roads' },
+    { key: 'vegetation', label: 'Vegetation' },
+    { key: 'airNoise', label: 'Air Quality' },
+    { key: 'railNight', label: 'Rail Noise (Night)' },
+    { key: 'roadNight', label: 'Road Noise (Night)' },
+    { key: 'apartmentCost', label: 'Affordability' }
+  ];
+
+  const chartData = metrics.map(metric => ({
+    metric: metric.label,
+    key: metric.key,
+    firstValue: first.scores ? first.scores[metric.key] : null,
+    secondValue: second.scores ? second.scores[metric.key] : null
+  }));
+
+  const containerWidth = compareUi.chart.clientWidth || 320;
+  const width = Math.max(containerWidth, 320);
+  const margin = { top: 56, right: 24, bottom: 32, left: 150 };
+  const rowHeight = 32;
+  const height = margin.top + margin.bottom + chartData.length * rowHeight;
+
+  const svg = d3.select(compareUi.chart)
+    .append('svg')
+    .attr('viewBox', `0 0 ${width} ${height}`)
+    .attr('preserveAspectRatio', 'xMidYMid meet');
+
+  const x = d3.scaleLinear()
+    .domain([0, 1])
+    .range([margin.left, width - margin.right]);
+
+  const y = d3.scaleBand()
+    .domain(chartData.map(d => d.metric))
+    .range([margin.top, height - margin.bottom])
+    .padding(0.25);
+
+  const series = [
+    { key: 'firstValue', slotIndex: 0 },
+    { key: 'secondValue', slotIndex: 1 }
+  ];
+
+  const y1 = d3.scaleBand()
+    .domain(series.map(item => item.key))
+    .range([0, y.bandwidth()])
+    .padding(0.15);
+
+  const axisBottom = d3.axisBottom(x)
+    .tickFormat(d => `${Math.round(d * 100)}%`)
+    .ticks(5)
+    .tickSizeOuter(0);
+
+  svg.append('g')
+    .attr('transform', `translate(0, ${height - margin.bottom})`)
+    .attr('class', 'compare-axis compare-axis-x')
+    .call(axisBottom)
+    .selectAll('text')
+    .style('font-size', '11px');
+
+  svg.append('g')
+    .attr('class', 'compare-axis compare-axis-y')
+    .attr('transform', `translate(${margin.left - 12}, 0)`)
+    .call(d3.axisLeft(y).tickSize(0))
+    .selectAll('text')
+    .style('font-size', '12px');
+
+  const legend = svg.append('g')
+    .attr('class', 'compare-legend')
+    .attr('transform', `translate(${margin.left}, ${margin.top - 32})`);
+
+  compareSelections.forEach((selection, index) => {
+    const legendItem = legend.append('g')
+      .attr('transform', `translate(${index * 160}, 0)`);
+
+    legendItem.append('rect')
+      .attr('width', 12)
+      .attr('height', 12)
+      .attr('rx', 2)
+      .attr('fill', getCompareStrokeColor(index));
+
+    legendItem.append('text')
+      .attr('x', 18)
+      .attr('y', 10)
+      .attr('fill', '#212529')
+      .attr('font-size', 12)
+      .text(getSelectionLabel(selection, index));
+  });
+
+  const groups = svg.append('g')
+    .selectAll('g')
+    .data(chartData)
+    .enter()
+    .append('g')
+    .attr('transform', d => `translate(0, ${y(d.metric) || margin.top})`);
+
+  groups.selectAll('rect')
+    .data(d => series.map(item => ({
+      seriesKey: item.key,
+      slotIndex: item.slotIndex,
+      value: d[item.key],
+      metric: d.metric
+    })))
+    .enter()
+    .append('rect')
+    .attr('x', () => x(0))
+    .attr('y', datum => y1(datum.seriesKey) || 0)
+    .attr('height', Math.max(0, y1.bandwidth()))
+    .attr('width', datum => {
+      if (datum.value == null || Number.isNaN(datum.value)) return 0;
+      return Math.max(0, x(datum.value) - x(0));
+    })
+    .attr('rx', 3)
+    .attr('fill', datum => getCompareStrokeColor(datum.slotIndex));
+
+  groups.selectAll('text')
+    .data(d => series.map(item => ({
+      seriesKey: item.key,
+      slotIndex: item.slotIndex,
+      value: d[item.key],
+      metric: d.metric
+    })))
+    .enter()
+    .append('text')
+    .attr('x', datum => {
+      const barEnd = datum.value == null ? x(0) : x(datum.value);
+      return barEnd + 6;
+    })
+    .attr('y', datum => {
+      const base = y1(datum.seriesKey) || 0;
+      return base + (y1.bandwidth() / 2);
+    })
+    .attr('fill', '#212529')
+    .attr('font-size', 11)
+    .attr('dominant-baseline', 'middle')
+    .text(datum => datum.value == null ? 'N/A' : formatScorePercent(datum.value));
+}
+
+function updateCompareDisplay() {
+  if (!compareMode || !compareUi.panel) return;
+
+  compareUi.panel.hidden = false;
+
+  const selectionCount = compareSelections.length;
+  if (compareUi.status) {
+    if (selectionCount === 0) {
+      compareUi.status.textContent = 'Select two hexagons on the map to compare.';
+    } else if (selectionCount === 1) {
+      compareUi.status.textContent = 'One hexagon locked in. Pick another to unlock the dashboard.';
+    } else {
+      compareUi.status.textContent = 'Comparing A and B. Click Reset to start over.';
+    }
+  }
+
+  if (compareUi.selection) {
+    if (!selectionCount) {
+      compareUi.selection.innerHTML = '<div class="compare-empty">No hexagons selected yet. Click two hexagons on the map.</div>';
+    } else {
+      const items = compareSelections.map((selection, index) => {
+        const scoreText = formatScorePercent(selection.scores ? selection.scores.composite : null);
+        const coordsText = (selection.lat != null && selection.lon != null)
+          ? `${selection.lat.toFixed(3)}, ${selection.lon.toFixed(3)}`
+          : 'Coordinates unavailable';
+        return `
+          <div class="compare-selection-item" data-compare-id="${selection.id}">
+            <div class="compare-selection-header">
+              <div class="compare-selection-name">${escapeHtml(getSelectionLabel(selection, index))}</div>
+              <button type="button" class="compare-remove" data-compare-remove="${selection.id}">Remove</button>
+            </div>
+            <div class="compare-selection-meta">
+              <span>Score ${escapeHtml(scoreText)}</span>
+              <span>${escapeHtml(coordsText)}</span>
+            </div>
+          </div>
+        `;
+      });
+      compareUi.selection.innerHTML = items.join('');
+    }
+  }
+
+  if (compareUi.summary) {
+    compareUi.summary.textContent = buildComparisonSummaryText();
+  }
+
+  renderComparisonChart();
+  applyCompareSelectionStyles();
+}
+
+function clearCompareSelections(options = {}) {
+  compareSelections.length = 0;
+  applyCompareSelectionStyles();
+  if (!options.silent) {
+    if (compareUi.status) {
+      compareUi.status.textContent = 'Select two hexagons on the map to compare.';
+    }
+    if (compareUi.summary) {
+      compareUi.summary.textContent = '';
+    }
+    if (compareUi.selection) {
+      compareUi.selection.innerHTML = '<div class="compare-empty">No hexagons selected yet. Click two hexagons on the map.</div>';
+    }
+    if (compareUi.chart) {
+      compareUi.chart.innerHTML = '<div class="compare-empty">Pick two hexagons to unlock the analytics dashboard.</div>';
+    }
+  }
+}
+
+function setCompareMode(enabled) {
+  compareMode = !!enabled;
+  if (compareUi.toggleButton) {
+    compareUi.toggleButton.classList.toggle('active', compareMode);
+  }
+  if (compareUi.panel) {
+    compareUi.panel.hidden = !compareMode;
+  }
+  if (compareMode) {
+    updateCompareDisplay();
+  } else {
+    clearCompareSelections({ silent: false });
+  }
+}
+
+function handleCompareSelection({ bin, hexId, scores, hexRadiusPixels }) {
+  if (!compareMode) return;
+
+  const existingIndex = compareSelections.findIndex(selection => selection.id === hexId);
+  if (existingIndex >= 0) {
+    compareSelections.splice(existingIndex, 1);
+    applyCompareSelectionStyles();
+    updateCompareDisplay();
+    return;
+  }
+
+  let replaced = false;
+  if (compareSelections.length >= 2) {
+    compareSelections.shift();
+    replaced = true;
+  }
+
+  compareSelections.push({
+    id: hexId,
+    lat: bin.lat,
+    lon: bin.lon,
+    cantonNum: bin.cantonNum,
+    hexRadiusPixels: hexRadiusPixels,
+    scores: scores || null
+  });
+
+  applyCompareSelectionStyles();
+  updateCompareDisplay();
+
+  if (compareUi.status && replaced) {
+    compareUi.status.textContent = 'Oldest selection replaced. Comparing the latest two hexagons.';
+  }
+}
+
+function refreshCompareAnalysis() {
+  if (!compareMode || !compareSelections.length) return;
+  updateCompareDisplay();
+}
+
+function initCompareControls() {
+  compareUi = {
+    toggleButton: document.getElementById('compare-toggle'),
+    panel: document.getElementById('compare-panel'),
+    status: document.getElementById('compare-status'),
+    selection: document.getElementById('compare-selection'),
+    summary: document.getElementById('compare-summary'),
+    chart: document.getElementById('compare-chart'),
+    reset: document.getElementById('compare-reset')
+  };
+
+  if (compareUi.status) {
+    compareUi.status.textContent = 'Select two hexagons on the map to compare.';
+  }
+
+  if (compareUi.selection) {
+    compareUi.selection.innerHTML = '<div class="compare-empty">No hexagons selected yet. Click two hexagons on the map.</div>';
+  }
+
+  if (compareUi.toggleButton) {
+    compareUi.toggleButton.addEventListener('click', () => {
+      setCompareMode(!compareMode);
+    });
+  }
+
+  if (compareUi.reset) {
+    compareUi.reset.addEventListener('click', () => {
+      clearCompareSelections();
+      if (compareUi.status) {
+        compareUi.status.textContent = 'Select two hexagons on the map to compare.';
+      }
+    });
+  }
+
+  if (compareUi.selection) {
+    compareUi.selection.addEventListener('click', (event) => {
+      const removeBtn = event.target.closest('[data-compare-remove]');
+      if (!removeBtn) return;
+      const hexId = removeBtn.getAttribute('data-compare-remove');
+      if (!hexId) return;
+      compareSelections = compareSelections.filter(selection => selection.id !== hexId);
+      applyCompareSelectionStyles();
+      updateCompareDisplay();
+    });
+  }
+
+  if (compareUi.chart) {
+    compareUi.chart.innerHTML = '<div class="compare-empty">Pick two hexagons to unlock the analytics dashboard.</div>';
+  }
+}
+
 // Debounce function
 function debounce(func, wait) {
   let timeout;
@@ -1294,20 +2478,27 @@ async function projectHexes() {
 function renderHexPaths(allBins) {
   const attachHexEvents = (selection) => {
     return selection
-      .on("mouseover", function(event) {
+      .on("mouseover", function(event, d) {
         cancelPopupClose();
+        const hexId = getHexIdentifierFromBin(d);
+        const slotIndex = getCompareSlotIndex(hexId);
         d3.select(this)
+          .classed('hex-hovering', true)
           .transition()
           .duration(200)
-          .attr("stroke-width", 2.5)
-          .attr("stroke", "#ffffff");
+          .attr("stroke-width", slotIndex >= 0 ? 4 : 2.5)
+          .attr("stroke", slotIndex >= 0 ? getCompareStrokeColor(slotIndex) : "#ffffff");
       })
-      .on("mouseout", function(event) {
+      .on("mouseout", function(event, d) {
+        const nextTarget = event.relatedTarget;
+        const hexId = getHexIdentifierFromBin(d);
+        const slotIndex = getCompareSlotIndex(hexId);
         d3.select(this)
+          .classed('hex-hovering', false)
           .transition()
           .duration(200)
-          .attr("stroke-width", 0.5);
-        const nextTarget = event.relatedTarget;
+          .attr("stroke-width", slotIndex >= 0 ? 3 : 0.5)
+          .attr("stroke", slotIndex >= 0 ? getCompareStrokeColor(slotIndex) : "#ffffff");
         if (!nextTarget || typeof nextTarget.closest !== 'function' || !nextTarget.closest('.leaflet-popup')) {
           schedulePopupClose();
         }
@@ -1387,7 +2578,7 @@ function renderHexPaths(allBins) {
   };
 
   const hexPaths = g.selectAll("path.hex")
-    .data(allBins, d => `${d.cantonNum}-${d.x}-${d.y}`);
+    .data(allBins, d => getHexIdentifierFromBin(d));
 
   hexPaths.exit().remove();
 
@@ -1400,140 +2591,152 @@ function renderHexPaths(allBins) {
     .style("pointer-events", "auto")
     .attr("cursor", "pointer");
 
-  attachHexEvents(enteredPaths);
+  const mergedPaths = enteredPaths.merge(hexPaths);
 
-  enteredPaths
-    .on("click", function(event, d) {
-      event.stopPropagation();
-      const containerPoint = map.mouseEventToContainerPoint(event);
-      const latlng = map.containerPointToLatLng(containerPoint);
+  const onHexClick = function(event, d) {
+    event.stopPropagation();
+    if (!d || !d.lat || !d.lon) return;
 
-      if (d.lat && d.lon) {
-        const hexRadiusPixels = hex.radius();
-        const hexId = `${d.cantonNum}-${d.x.toFixed(1)}-${d.y.toFixed(1)}`;
-        const hexagonPolygon = createHexagonPolygon(d.x, d.y, hexRadiusPixels);
-        const freshScores = calculateCompositeScore(d.lat, d.lon, hexRadiusPixels, hexId, hexagonPolygon);
+    const containerPoint = map.mouseEventToContainerPoint(event);
+    const latlng = map.containerPointToLatLng(containerPoint);
 
-        if (freshScores) {
-          cancelPopupClose();
-          let content = `
-          <div style="font-family: 'Segoe UI', Tahoma, sans-serif; max-width: 350px;">
-            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 12px; margin: -10px -10px 10px -10px; border-radius: 5px 5px 0 0;">
-              <h3 style="margin: 0; font-size: 18px;">📊 Area Overview</h3>
-              <div style="font-size: 24px; font-weight: bold; margin-top: 8px;">
-                Score: ${(freshScores.composite * 100).toFixed(1)}%
-              </div>
-            </div>
-            
-            <div style="background: #f8f9fa; padding: 10px; border-radius: 5px; margin-bottom: 10px;">
-              <h4 style="margin: 0 0 8px 0; color: #495057; font-size: 14px;">🏢 Facility Access</h4>
-              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 13px;">
-                <div><strong>Schools:</strong> ${(freshScores.schools * 100).toFixed(0)}%</div>
-                <div style="color: #6c757d;">${freshScores.distances.schools ? (freshScores.distances.schools/1000).toFixed(2) + ' km' : 'N/A'}</div>
-                <div><strong>Supermarkets:</strong> ${(freshScores.supermarkets * 100).toFixed(0)}%</div>
-                <div style="color: #6c757d;">${freshScores.distances.supermarkets ? (freshScores.distances.supermarkets/1000).toFixed(2) + ' km' : 'N/A'}</div>
-                <div><strong>Restaurants:</strong> ${(freshScores.restaurants * 100).toFixed(0)}%</div>
-                <div style="color: #6c757d;">${freshScores.distances.restaurants ? (freshScores.distances.restaurants/1000).toFixed(2) + ' km' : 'N/A'}</div>
-                <div><strong>Access Roads:</strong> ${(freshScores.accessRoads * 100).toFixed(0)}%</div>
-                <div style="color: #6c757d;">${freshScores.distances.accessRoads ? (freshScores.distances.accessRoads/1000).toFixed(2) + ' km' : 'N/A'}</div>
-              </div>
-            </div>
-            
-            <div style="background: #f8f9fa; padding: 10px; border-radius: 5px; margin-bottom: 10px;">
-              <h4 style="margin: 0 0 8px 0; color: #495057; font-size: 14px;">🌿 Environmental Quality</h4>
-              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 13px;">
-                <div><strong>Vegetation:</strong> ${(freshScores.vegetation * 100).toFixed(0)}%</div>
-                <div style="color: #6c757d;">${freshScores.rasterValues.vegetation !== null ? freshScores.rasterValues.vegetation.toFixed(2) : 'N/A'}</div>
-                <div><strong>Air Quality:</strong> ${(freshScores.airNoise * 100).toFixed(0)}%</div>
-                <div style="color: #6c757d;">${freshScores.rasterValues.airNoise !== null ? freshScores.rasterValues.airNoise.toFixed(1) : 'N/A'}</div>
-                <div><strong>Rail Noise (Night):</strong> ${(freshScores.railNight * 100).toFixed(0)}%</div>
-                <div style="color: #6c757d;">${freshScores.rasterValues.railNight !== null ? freshScores.rasterValues.railNight.toFixed(1) + ' dB' : 'N/A'}</div>
-                <div><strong>Road Noise (Night):</strong> ${(freshScores.roadNight * 100).toFixed(0)}%</div>
-                <div style="color: #6c757d;">${freshScores.rasterValues.roadNight !== null ? freshScores.rasterValues.roadNight.toFixed(1) + ' dB' : 'N/A'}</div>
-              </div>
-            </div>
-        `;
+    const hexRadiusPixels = d.hexRadiusPixels || hex.radius();
+    const hexId = getHexIdentifierFromBin(d);
+    const hexagonPolygon = createHexagonPolygon(d.x, d.y, hexRadiusPixels);
+    const freshScores = calculateCompositeScore(d.lat, d.lon, hexRadiusPixels, hexId, hexagonPolygon);
 
-          if (freshScores.apartmentData && freshScores.apartmentData.count > 0) {
-            const uniqueLocations = new Set(freshScores.apartmentData.apartments.map(apt => `${apt.lat},${apt.lon}`));
-            const buildingCount = uniqueLocations.size;
+    if (compareMode) {
+      map.closePopup();
+      handleCompareSelection({
+        bin: d,
+        hexId,
+        scores: freshScores,
+        latlng,
+        hexRadiusPixels
+      });
+      return;
+    }
 
-            content += `
-            <div style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; padding: 10px; border-radius: 5px;">
-              <h4 style="margin: 0 0 8px 0; font-size: 14px;">🏠 Housing in this Hexagon</h4>
-              <div style="font-size: 20px; font-weight: bold; margin-bottom: 5px;">
-                ${freshScores.apartmentData.avgPricePerRoom.toFixed(0)} CHF/room
-              </div>
-              <div style="font-size: 13px; opacity: 0.95; margin-bottom: 8px;">
-                ${freshScores.apartmentData.count} apartment${freshScores.apartmentData.count > 1 ? 's' : ''} in ${buildingCount} building${buildingCount > 1 ? 's' : ''}
-              </div>
-              <div style="font-size: 13px; opacity: 0.9; margin-bottom: 8px;">
-                Affordability: ${(freshScores.apartmentCost * 100).toFixed(0)}%
-              </div>
-              <details style="font-size: 12px; opacity: 0.9; cursor: pointer;">
-                <summary style="margin-bottom: 5px;">Show apartment details</summary>
-                <div style="max-height: 150px; overflow-y: auto; margin-top: 5px;">
-          `;
+    if (!freshScores) return;
 
-            freshScores.apartmentData.apartments.slice(0, 10).forEach((apt, idx) => {
-              const safeUrl = apt.url && apt.url !== '#'
-                ? apt.url
-                : null;
+    cancelPopupClose();
+    let content = `
+      <div style="font-family: 'Segoe UI', Tahoma, sans-serif; max-width: 350px;">
+        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 12px; margin: -10px -10px 10px -10px; border-radius: 5px 5px 0 0;">
+          <h3 style="margin: 0; font-size: 18px;">📊 Area Overview</h3>
+          <div style="font-size: 24px; font-weight: bold; margin-top: 8px;">
+            Score: ${(freshScores.composite * 100).toFixed(1)}%
+          </div>
+        </div>
+        
+        <div style="background: #f8f9fa; padding: 10px; border-radius: 5px; margin-bottom: 10px;">
+          <h4 style="margin: 0 0 8px 0; color: #495057; font-size: 14px;">🏢 Facility Access</h4>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 13px;">
+            <div><strong>Schools:</strong> ${(freshScores.schools * 100).toFixed(0)}%</div>
+            <div style="color: #6c757d;">${freshScores.distances.schools ? (freshScores.distances.schools/1000).toFixed(2) + ' km' : 'N/A'}</div>
+            <div><strong>Supermarkets:</strong> ${(freshScores.supermarkets * 100).toFixed(0)}%</div>
+            <div style="color: #6c757d;">${freshScores.distances.supermarkets ? (freshScores.distances.supermarkets/1000).toFixed(2) + ' km' : 'N/A'}</div>
+            <div><strong>Restaurants:</strong> ${(freshScores.restaurants * 100).toFixed(0)}%</div>
+            <div style="color: #6c757d;">${freshScores.distances.restaurants ? (freshScores.distances.restaurants/1000).toFixed(2) + ' km' : 'N/A'}</div>
+            <div><strong>Access Roads:</strong> ${(freshScores.accessRoads * 100).toFixed(0)}%</div>
+            <div style="color: #6c757d;">${freshScores.distances.accessRoads ? (freshScores.distances.accessRoads/1000).toFixed(2) + ' km' : 'N/A'}</div>
+          </div>
+        </div>
+        
+        <div style="background: #f8f9fa; padding: 10px; border-radius: 5px; margin-bottom: 10px;">
+          <h4 style="margin: 0 0 8px 0; color: #495057; font-size: 14px;">🌿 Environmental Quality</h4>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 13px;">
+            <div><strong>Vegetation:</strong> ${(freshScores.vegetation * 100).toFixed(0)}%</div>
+            <div style="color: #6c757d;">${freshScores.rasterValues.vegetation !== null ? freshScores.rasterValues.vegetation.toFixed(2) : 'N/A'}</div>
+            <div><strong>Air Quality:</strong> ${(freshScores.airNoise * 100).toFixed(0)}%</div>
+            <div style="color: #6c757d;">${freshScores.rasterValues.airNoise !== null ? freshScores.rasterValues.airNoise.toFixed(1) : 'N/A'}</div>
+            <div><strong>Rail Noise (Night):</strong> ${(freshScores.railNight * 100).toFixed(0)}%</div>
+            <div style="color: #6c757d;">${freshScores.rasterValues.railNight !== null ? freshScores.rasterValues.railNight.toFixed(1) + ' dB' : 'N/A'}</div>
+            <div><strong>Road Noise (Night):</strong> ${(freshScores.roadNight * 100).toFixed(0)}%</div>
+            <div style="color: #6c757d;">${freshScores.rasterValues.roadNight !== null ? freshScores.rasterValues.roadNight.toFixed(1) + ' dB' : 'N/A'}</div>
+          </div>
+        </div>
+    `;
 
-              const detailText = `${idx + 1}. ${apt.rooms} rooms - ${apt.price} CHF (${apt.pricePerRoom.toFixed(0)} CHF/room)`;
+    if (freshScores.apartmentData && freshScores.apartmentData.count > 0) {
+      const uniqueLocations = new Set(freshScores.apartmentData.apartments.map(apt => `${apt.lat},${apt.lon}`));
+      const buildingCount = uniqueLocations.size;
 
-              content += `
-              <div style="padding: 4px 0; border-top: 1px solid rgba(255,255,255,0.2);">
-                ${safeUrl ? `<a href="${safeUrl}" target="_blank" rel="noopener" style="color: inherit; text-decoration: underline;">${detailText}</a>` : detailText}
-              </div>
-            `;
-            });
+      content += `
+        <div style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; padding: 10px; border-radius: 5px;">
+          <h4 style="margin: 0 0 8px 0; font-size: 14px;">🏠 Housing in this Hexagon</h4>
+          <div style="font-size: 20px; font-weight: bold; margin-bottom: 5px;">
+            ${freshScores.apartmentData.avgPricePerRoom.toFixed(0)} CHF/room
+          </div>
+          <div style="font-size: 13px; opacity: 0.95; margin-bottom: 8px;">
+            ${freshScores.apartmentData.count} apartment${freshScores.apartmentData.count > 1 ? 's' : ''} in ${buildingCount} building${buildingCount > 1 ? 's' : ''}
+          </div>
+          <div style="font-size: 13px; opacity: 0.9; margin-bottom: 8px;">
+            Affordability: ${(freshScores.apartmentCost * 100).toFixed(0)}%
+          </div>
+          <details style="font-size: 12px; opacity: 0.9; cursor: pointer;">
+            <summary style="margin-bottom: 5px;">Show apartment details</summary>
+            <div style="max-height: 150px; overflow-y: auto; margin-top: 5px;">
+      
+      `;
 
-            if (freshScores.apartmentData.count > 10) {
-              content += `<div style="padding: 4px 0; font-style: italic;">... and ${freshScores.apartmentData.count - 10} more</div>`;
-            }
+      freshScores.apartmentData.apartments.slice(0, 10).forEach((apt, idx) => {
+        const safeUrl = apt.url && apt.url !== '#'
+          ? apt.url
+          : null;
 
-            content += `
-                </div>
-              </details>
-            </div>
-          `;
-          } else {
-            content += `
-            <div style="background: #e9ecef; padding: 10px; border-radius: 5px; text-align: center; color: #6c757d;">
-              <div style="font-size: 14px;">🏠 No apartments in this hexagon</div>
-              <div style="font-size: 11px; margin-top: 4px; opacity: 0.8;">
-                Center: (${d.lat?.toFixed(4) ?? 'N/A'}, ${d.lon?.toFixed(4) ?? 'N/A'})<br>
-                Radius: ${hexRadiusPixels.toFixed(1)}px<br>
-                SVG Position: (${d.x.toFixed(1)}, ${d.y.toFixed(1)})
-              </div>
+        const detailText = `${idx + 1}. ${apt.rooms} rooms - ${apt.price} CHF (${apt.pricePerRoom.toFixed(0)} CHF/room)`;
+
+        content += `
+            <div style="padding: 4px 0; border-top: 1px solid rgba(255,255,255,0.2);">
+              ${safeUrl ? `<a href="${safeUrl}" target="_blank" rel="noopener" style="color: inherit; text-decoration: underline;">${detailText}</a>` : detailText}
             </div>
           `;
-          }
+      });
 
-          content += `</div>`;
-
-          L.popup()
-            .setLatLng(latlng)
-            .setContent(content)
-            .openOn(map);
-        }
+      if (freshScores.apartmentData.count > 10) {
+        content += `<div style="padding: 4px 0; font-style: italic;">... and ${freshScores.apartmentData.count - 10} more</div>`;
       }
-    });
 
-  attachHexEvents(hexPaths);
+      content += `
+            </div>
+          </details>
+        </div>
+      `;
+    } else {
+      content += `
+        <div style="background: #e9ecef; padding: 10px; border-radius: 5px; text-align: center; color: #6c757d;">
+          <div style="font-size: 14px;">🏠 No apartments in this hexagon</div>
+          <div style="font-size: 11px; margin-top: 4px; opacity: 0.8;">
+            Center: (${d.lat?.toFixed(4) ?? 'N/A'}, ${d.lon?.toFixed(4) ?? 'N/A'})<br>
+            Radius: ${hexRadiusPixels.toFixed(1)}px<br>
+            SVG Position: (${d.x.toFixed(1)}, ${d.y.toFixed(1)})
+          </div>
+        </div>
+      `;
+    }
 
-  enteredPaths
+    content += `</div>`;
+
+    L.popup()
+      .setLatLng(latlng)
+      .setContent(content)
+      .openOn(map);
+  };
+
+  attachHexEvents(mergedPaths);
+
+  mergedPaths
+    .on("click", onHexClick)
     .attr("fill", computeFill)
     .attr("fill-opacity", hexOpacity)
     .attr("d", hex.hexagon())
     .attr("transform", d => `translate(${d.x},${d.y})`);
 
-  hexPaths
-    .attr("fill", computeFill)
-    .attr("fill-opacity", hexOpacity)
-    .attr("d", hex.hexagon())
-    .attr("transform", d => `translate(${d.x},${d.y})`);
+  applyCompareSelectionStyles();
+  if (compareMode && compareSelections.length) {
+    updateCompareDisplay();
+  }
 }
 
 // Update boundary positions
@@ -1746,6 +2949,7 @@ function createWeightSliders() {
         console.log(`🎚️ Weight changed: ${index.label} = ${newValue.toFixed(2)}`);
         scoreCache.clear();
         projectHexes();
+        refreshCompareAnalysis();
       });
     }
   });
@@ -2015,6 +3219,83 @@ function detectFacilityFocus(text) {
   return null;
 }
 
+const PLACE_STOPWORDS = new Set([
+  'i', 'im', "i'm", 'we', "we're", 'you', "you're", 'they', "they're", 'he', 'she', 'it', 'hello',
+  'hi', 'hey', 'thanks', 'thank', 'please', 'budget', 'looking', 'looking for', 'searching', 'search',
+  'need', 'needs', 'find', 'want', 'wants', 'would', 'could', 'should', 'help', 'show', 'give', 'recommend',
+  'suggest', 'idea', 'ideas', 'plan', 'plans', 'good', 'spot', 'spots', 'home', 'housing', 'apartment',
+  'apartments', 'flat', 'flats', 'place', 'places', 'option', 'options', 'swiss', 'switzerland', 'rent',
+  'rental', 'guide', 'map', 'data', 'analysis', 'info', 'information'
+]);
+
+function detectStandalonePlaceMentions(text) {
+  if (!text) return [];
+  const matches = new Map();
+  const candidatePattern = /\b([A-Z][A-Za-z\u00C0-\u024F\-']*(?:\.[A-Za-z\u00C0-\u024F\-']*)?(?:\s+[A-Z][A-Za-z\u00C0-\u024F\-']*(?:\.[A-Za-z\u00C0-\u024F\-']*)?)*)\b/g;
+  let match;
+  while ((match = candidatePattern.exec(text)) !== null) {
+    const raw = match[1] ? match[1].trim() : '';
+    const cleaned = raw.replace(/\.(?=\s|$)/g, '').trim();
+    if (!cleaned || cleaned.length < 3) continue;
+    const lower = cleaned.toLowerCase();
+    if (PLACE_STOPWORDS.has(lower)) continue;
+    const lettersOnly = cleaned.replace(/[^A-Za-z\u00C0-\u024F]/g, '');
+    if (!lettersOnly) continue;
+    if (/^[A-Z]{2,}$/.test(lettersOnly) && lettersOnly.length <= 4) continue;
+    const normalized = normalizePlaceToken(cleaned);
+    if (!normalized) continue;
+    matches.set(normalized, cleaned);
+  }
+  return Array.from(matches.values());
+}
+
+function detectRadiusInKm(text) {
+  if (!text) return null;
+  const radiusPattern = /(within|rayon|radius|inside|umkreis|perimeter|distance of|dans un rayon de|im umkreis von)\s*(\d+(?:[.,]\d+)?)\s*(km|kilometer|kilometers|kilometre|kilometres|kms|m|meter|meters|metre|metres)/gi;
+  let match;
+  const candidates = [];
+  while ((match = radiusPattern.exec(text)) !== null) {
+    const rawValue = match[2];
+    const unit = match[3].toLowerCase();
+    const value = parseFloat(rawValue.replace(',', '.'));
+    if (!Number.isFinite(value)) continue;
+    if (unit.startsWith('m') && !unit.startsWith('mi')) {
+      candidates.push(value / 1000);
+    } else {
+      candidates.push(value);
+    }
+  }
+  if (!candidates.length) return null;
+  const positive = candidates.filter(val => val > 0.025);
+  if (!positive.length) return null;
+  const min = Math.min(...positive);
+  return Number.isFinite(min) ? min : null;
+}
+
+function extractPriorityKeywords(text) {
+  if (!text) return [];
+  const lower = text.toLowerCase();
+  const priorities = [];
+  const pushUnique = (value) => {
+    if (!value) return;
+    if (!priorities.includes(value)) priorities.push(value);
+  };
+
+  if (/(closest|nearest|shortest|proche|près|nahe|closest to|nearby)/i.test(lower)) pushUnique('closest');
+  if (/(farthest|furthest|weitest|plus loin|loin)/i.test(lower)) pushUnique('farthest');
+  if (/(cheapest|cheap|affordable|low cost|budget|moins cher|günstig)/i.test(lower)) pushUnique('cheapest');
+  if (/(luxury|expensive|premium|haut de gamme|teuer)/i.test(lower)) pushUnique('luxury');
+  if (/(best|top|greatest|ideal|optimal|meilleur|beste)/i.test(lower)) pushUnique('best');
+  if (/(worst|avoid|moins bon|schlecht)/i.test(lower)) pushUnique('worst');
+  if (/(quiet|calm|silent|peaceful|ruhig|calme)/i.test(lower)) pushUnique('quiet');
+  if (/(green|vegetation|park|nature|verdant|vert|grün)/i.test(lower)) pushUnique('green');
+  if (/(school|university|college|campus|école|schule)/i.test(lower)) pushUnique('schools');
+  if (/(transport|transit|bus|train|tram|metro|gare|bahn|sbb|cff)/i.test(lower)) pushUnique('transport');
+  if (/(shop|shopping|supermarket|grocery|store|commerce|amenities|magasin|laden)/i.test(lower)) pushUnique('amenities');
+
+  return priorities;
+}
+
 const intentKeywordSets = {
   greeting: [
     /\b(?:hi|hello|hey|yo|salut|bonjour|bonsoir|grüezi|hoi|hallo|ciao|servus|buongiorno|guten\s*(?:morgen|tag|abend)|bon matin)\b/i,
@@ -2053,6 +3334,24 @@ function extractProximityTargets(text) {
   const results = new Map();
   const pending = [];
   const missingNames = new Set();
+  const radiusHints = new Map();
+
+  const radiusPlacePattern = /within\s+(\d+(?:[.,]\d+)?)\s*(km|kilometer|kilometers|kilometre|kilometres|kms|m|meter|meters|metre|metres)\s+(?:of|from|around|near)\s+([^.,;]+)/gi;
+  let radiusMatch;
+  while ((radiusMatch = radiusPlacePattern.exec(text)) !== null) {
+    const rawValue = radiusMatch[1];
+    const unit = radiusMatch[2].toLowerCase();
+    const placeRaw = radiusMatch[3].trim();
+    const value = parseFloat(rawValue.replace(',', '.'));
+    if (!Number.isFinite(value) || !placeRaw) continue;
+    const kmValue = unit.startsWith('m') && !unit.startsWith('mi') ? value / 1000 : value;
+    if (!Number.isFinite(kmValue)) continue;
+    const key = normalizePlaceToken(placeRaw);
+    if (key) {
+      radiusHints.set(key, kmValue);
+      radiusHints.set(key.replace(/\s+/g, ''), kmValue);
+    }
+  }
 
   const proximityPattern = /(closest|near|close to|around|nearby|by|proche de|près de|autour de|vers)\s+([^.,;]+)/gi;
   let match;
@@ -2064,20 +3363,24 @@ function extractProximityTargets(text) {
 
     const place = placeLookup.get(candidate) || placeLookup.get(candidate.replace(/\s+/g, ''));
     if (place) {
-      results.set(place.name, place);
+      const radiusKm = radiusHints.get(candidate) || radiusHints.get(candidate.replace(/\s+/g, '')) || null;
+      const placeEntry = radiusKm != null ? { ...place, radiusKm } : place;
+      results.set(`${placeEntry.name}-${radiusKm != null ? radiusKm : 'any'}`, placeEntry);
       continue;
     }
 
-    const lookupPromise = queueDynamicPlaceLookup(candidate, rawCandidate);
+    const lookupPromise = queueDynamicPlaceLookup(candidate, rawCandidate, { radiusKm: radiusHints.get(candidate) || radiusHints.get(candidate.replace(/\s+/g, '')) || null });
     if (lookupPromise) {
-      pending.push({ name: rawCandidate, promise: lookupPromise });
+      pending.push({ name: rawCandidate, promise: lookupPromise, radiusKm: radiusHints.get(candidate) || radiusHints.get(candidate.replace(/\s+/g, '')) || null });
       missingNames.add(rawCandidate);
     }
   }
 
   placeLookup.forEach((place, key) => {
     if (normalized.includes(key)) {
-      results.set(place.name, place);
+      const radiusKm = radiusHints.get(key) || radiusHints.get(key.replace(/\s+/g, '')) || null;
+      const placeEntry = radiusKm != null ? { ...place, radiusKm } : place;
+      results.set(`${placeEntry.name}-${radiusKm != null ? radiusKm : 'any'}`, placeEntry);
     }
   });
 
@@ -2091,17 +3394,43 @@ function extractProximityTargets(text) {
       if (candidate) {
         const place = placeLookup.get(candidate) || placeLookup.get(candidate.replace(/\s+/g, ''));
         if (place) {
-          results.set(place.name, place);
+          const radiusKm = radiusHints.get(candidate) || radiusHints.get(candidate.replace(/\s+/g, '')) || null;
+          const placeEntry = radiusKm != null ? { ...place, radiusKm } : place;
+          results.set(`${placeEntry.name}-${radiusKm != null ? radiusKm : 'any'}`, placeEntry);
         } else {
-          const lookupPromise = queueDynamicPlaceLookup(candidate, raw);
+          const lookupPromise = queueDynamicPlaceLookup(candidate, raw, { radiusKm: radiusHints.get(candidate) || radiusHints.get(candidate.replace(/\s+/g, '')) || null });
           if (lookupPromise) {
-            pending.push({ name: raw, promise: lookupPromise });
+            pending.push({ name: raw, promise: lookupPromise, radiusKm: radiusHints.get(candidate) || radiusHints.get(candidate.replace(/\s+/g, '')) || null });
             missingNames.add(raw);
           }
         }
       }
     }
   }
+
+  const looseMentions = detectStandalonePlaceMentions(text);
+  looseMentions.forEach(raw => {
+    const candidate = normalizePlaceToken(raw);
+    if (!candidate) return;
+    const existing = Array.from(results.values()).some(item => item && item.name && normalizePlaceToken(item.name) === candidate);
+    if (existing) return;
+    const alreadyPending = pending.some(item => item && item.name && normalizePlaceToken(item.name) === candidate);
+    if (alreadyPending) return;
+
+    const place = placeLookup.get(candidate) || placeLookup.get(candidate.replace(/\s+/g, ''));
+    if (place) {
+      const radiusKm = radiusHints.get(candidate) || radiusHints.get(candidate.replace(/\s+/g, '')) || null;
+      const placeEntry = radiusKm != null ? { ...place, radiusKm } : place;
+      results.set(`${placeEntry.name}-${radiusKm != null ? radiusKm : 'any'}`, placeEntry);
+      return;
+    }
+
+    const lookupPromise = queueDynamicPlaceLookup(candidate, raw, { radiusKm: radiusHints.get(candidate) || radiusHints.get(candidate.replace(/\s+/g, '')) || null });
+    if (lookupPromise) {
+      pending.push({ name: raw, promise: lookupPromise, radiusKm: radiusHints.get(candidate) || radiusHints.get(candidate.replace(/\s+/g, '')) || null });
+      missingNames.add(raw);
+    }
+  });
 
   return {
     matches: Array.from(results.values()),
@@ -2160,9 +3489,23 @@ function formatDistanceKm(distanceKm) {
 function extractFiltersFromMessage(message) {
   const roomsFromWords = detectRoomsFromWords(message);
   const preference = detectPreference(message);
-  const environmentFocus = detectEnvironmentFocus(message);
-  const facilityFocus = detectFacilityFocus(message);
+  let environmentFocus = detectEnvironmentFocus(message);
+  let facilityFocus = detectFacilityFocus(message);
   const proximityInfo = extractProximityTargets(message);
+  const radiusKm = detectRadiusInKm(message);
+  const priorityKeywords = extractPriorityKeywords(message);
+
+  if (!environmentFocus) {
+    if (priorityKeywords.includes('quiet')) environmentFocus = 'quiet';
+    else if (priorityKeywords.includes('green')) environmentFocus = 'green';
+  }
+
+  if (!facilityFocus) {
+    if (priorityKeywords.includes('schools')) facilityFocus = 'schools';
+    else if (priorityKeywords.includes('transport')) facilityFocus = 'transport';
+    else if (priorityKeywords.includes('amenities')) facilityFocus = 'amenities';
+  }
+
   return {
     cantons: extractCantonsFromText(message),
     budget: detectBudget(message),
@@ -2171,8 +3514,10 @@ function extractFiltersFromMessage(message) {
     environmentFocus,
     facilityFocus,
     proximityTargets: proximityInfo.matches,
-    pendingGeocodes: proximityInfo.pending.map(item => item.promise).filter(Boolean),
-    pendingPlaceNames: proximityInfo.missing
+    pendingGeocodes: proximityInfo.pending,
+    pendingPlaceNames: proximityInfo.missing,
+    searchRadiusKm: radiusKm,
+    priorities: priorityKeywords
   };
 }
 
@@ -2214,6 +3559,7 @@ function determineIntent(message, filters = {}) {
     if (filters.preference) scores.goodSpots += 1;
     if (filters.environmentFocus || filters.facilityFocus) scores.goodSpots += 1;
     if (filters.proximityTargets && filters.proximityTargets.length) scores.goodSpots += 2;
+    if (filters.priorities && filters.priorities.length) scores.goodSpots += 1;
   }
 
   const wordCount = lower.trim().split(/\s+/).filter(Boolean).length;
@@ -2484,22 +3830,48 @@ function annotateEntryForFilters(entry, filters) {
   let proximityDistanceKm = null;
   let proximityName = null;
   const proximityTargets = Array.isArray(filters?.proximityTargets) ? filters.proximityTargets : [];
+  const globalRadiusKm = typeof filters?.searchRadiusKm === 'number' ? filters.searchRadiusKm : null;
+  const proximityDetails = [];
+  let withinRadius = false;
 
   proximityTargets.forEach(target => {
     if (!target || target.lat == null || target.lon == null) return;
     const dist = haversineDistanceKm(entry.lat, entry.lon, target.lat, target.lon);
     if (dist == null || Number.isNaN(dist)) return;
+    const targetRadiusKm = typeof target.radiusKm === 'number' ? target.radiusKm : null;
+    const withinTargetRadius = targetRadiusKm != null && dist <= targetRadiusKm;
+    if (withinTargetRadius) withinRadius = true;
+    proximityDetails.push({
+      name: target.name || null,
+      distanceKm: dist,
+      radiusKm: targetRadiusKm,
+      withinRadius: withinTargetRadius
+    });
     if (proximityDistanceKm == null || dist < proximityDistanceKm) {
       proximityDistanceKm = dist;
       proximityName = target.name || null;
     }
   });
 
+  if (!withinRadius && globalRadiusKm != null && proximityDistanceKm != null && proximityDistanceKm <= globalRadiusKm) {
+    withinRadius = true;
+  }
+
   const highlights = [];
   if (proximityName && proximityDistanceKm != null) {
     const distanceLabel = formatDistanceKm(proximityDistanceKm);
     if (distanceLabel) {
-      highlights.push(`Near ${proximityName} (${distanceLabel})`);
+      const radiusLabel = (() => {
+        const targetDetail = proximityDetails.find(item => item.name === proximityName && item.radiusKm);
+        if (targetDetail && targetDetail.radiusKm != null) {
+          return `≤ ${targetDetail.radiusKm.toFixed(1)} km`;
+        }
+        if (globalRadiusKm != null) {
+          return `within ${globalRadiusKm.toFixed(1)} km`;
+        }
+        return null;
+      })();
+      highlights.push(`Near ${proximityName} (${distanceLabel}${radiusLabel ? `, ${radiusLabel}` : ''})`);
     }
   }
 
@@ -2531,11 +3903,74 @@ function annotateEntryForFilters(entry, filters) {
     facilityDistancesKm,
     proximityDistanceKm,
     proximityName,
-    highlights
+    highlights,
+    proximityDetails,
+    withinRadius,
+    globalRadiusKm
   };
 }
 
 function compareAnnotatedEntries(a, b, filters) {
+  const priorityChain = Array.isArray(filters?.priorities) ? filters.priorities : [];
+  if (priorityChain.length) {
+    for (const priority of priorityChain) {
+      switch (priority) {
+        case 'closest': {
+          const cmp = compareNumeric(a.metrics.proximityDistanceKm, b.metrics.proximityDistanceKm, 'asc');
+          if (cmp !== 0) return cmp;
+          break;
+        }
+        case 'cheapest': {
+          const cmp = compareNumeric(a.entry.pricePerRoom, b.entry.pricePerRoom, 'asc');
+          if (cmp !== 0) return cmp;
+          break;
+        }
+        case 'luxury': {
+          const cmp = compareNumeric(a.entry.pricePerRoom, b.entry.pricePerRoom, 'desc');
+          if (cmp !== 0) return cmp;
+          break;
+        }
+        case 'best': {
+          const cmp = compareNumeric(a.entry.score, b.entry.score, 'desc');
+          if (cmp !== 0) return cmp;
+          break;
+        }
+        case 'worst': {
+          const cmp = compareNumeric(a.entry.score, b.entry.score, 'asc');
+          if (cmp !== 0) return cmp;
+          break;
+        }
+        case 'quiet': {
+          const cmp = compareNumeric(a.metrics.quietScore, b.metrics.quietScore, 'desc');
+          if (cmp !== 0) return cmp;
+          break;
+        }
+        case 'green': {
+          const cmp = compareNumeric(a.metrics.greenScore, b.metrics.greenScore, 'desc');
+          if (cmp !== 0) return cmp;
+          break;
+        }
+        case 'schools': {
+          const cmp = compareNumeric(a.metrics.facilityDistancesKm?.schools, b.metrics.facilityDistancesKm?.schools, 'asc');
+          if (cmp !== 0) return cmp;
+          break;
+        }
+        case 'transport': {
+          const cmp = compareNumeric(a.metrics.facilityDistancesKm?.transport, b.metrics.facilityDistancesKm?.transport, 'asc');
+          if (cmp !== 0) return cmp;
+          break;
+        }
+        case 'amenities': {
+          const cmp = compareNumeric(a.metrics.facilityDistancesKm?.amenities, b.metrics.facilityDistancesKm?.amenities, 'asc');
+          if (cmp !== 0) return cmp;
+          break;
+        }
+        default:
+          break;
+      }
+    }
+  }
+
   if (filters?.proximityTargets && filters.proximityTargets.length) {
     const cmp = compareNumeric(a.metrics.proximityDistanceKm, b.metrics.proximityDistanceKm, 'asc');
     if (cmp !== 0) return cmp;
@@ -2589,7 +4024,10 @@ function getSuggestions(filters) {
     usedProximityFilter: false,
     proximityFallback: false,
     budgetFallback: false,
-    roomsFallback: false
+    roomsFallback: false,
+    usedRadius: false,
+    radiusFallback: false,
+    radiusRequested: typeof filters?.searchRadiusKm === 'number' && filters.searchRadiusKm > 0
   };
 
   if (!apartmentInsights.length) {
@@ -2644,17 +4082,59 @@ function getSuggestions(filters) {
   const proximityLimitKm = 40;
   let activeList = annotated;
   if (context.hadProximityTargets) {
-    const withinLimit = annotated.filter(item => item.metrics.proximityDistanceKm != null && item.metrics.proximityDistanceKm <= proximityLimitKm);
-    if (withinLimit.length) {
-      activeList = withinLimit;
-      context.usedProximityFilter = true;
-    } else {
-      context.proximityFallback = true;
+    const radiusProvided = typeof filters?.searchRadiusKm === 'number' && filters.searchRadiusKm > 0.01;
+    const targetRadiusProvided = filters?.proximityTargets?.some(target => target && typeof target.radiusKm === 'number' && target.radiusKm > 0.01);
+    const hasRadiusCriteria = radiusProvided || targetRadiusProvided;
+
+    if (targetRadiusProvided) {
+      context.radiusRequested = true;
+    }
+
+    const satisfiesCustomRadius = (item) => {
+      const metrics = item.metrics;
+      if (!metrics) return false;
+      if (radiusProvided && metrics.proximityDistanceKm != null && metrics.proximityDistanceKm <= filters.searchRadiusKm) {
+        return true;
+      }
+      if (metrics.proximityDetails && metrics.proximityDetails.some(detail => detail.withinRadius)) {
+        return true;
+      }
+      return false;
+    };
+
+    if (hasRadiusCriteria) {
+      const withinCustomRadius = annotated.filter(satisfiesCustomRadius);
+      if (withinCustomRadius.length) {
+        activeList = withinCustomRadius;
+        context.usedProximityFilter = true;
+        context.usedRadius = true;
+      } else {
+        context.radiusFallback = true;
+      }
+    }
+
+    if (!context.usedProximityFilter) {
+      const proximityLimitKm = filters?.proximityTargets && filters.proximityTargets.length > 1 ? 60 : 40;
+      const withinLimit = annotated.filter(item => item.metrics.proximityDistanceKm != null && item.metrics.proximityDistanceKm <= proximityLimitKm);
+      if (withinLimit.length) {
+        activeList = withinLimit;
+        context.usedProximityFilter = true;
+      } else if (!context.radiusFallback) {
+        context.proximityFallback = true;
+      }
     }
   }
 
-  const sorted = activeList.length ? activeList.slice().sort(comparator) : annotated.slice().sort(comparator);
-  const topEntries = sorted.slice(0, 3).map(item => ({
+  const ranked = activeList.length ? activeList.slice().sort(comparator) : annotated.slice().sort(comparator);
+  const limited = ranked.slice(0, 3);
+  const ascendingPrice = limited.slice().sort((a, b) => {
+    const primaryA = a.entry.price != null ? a.entry.price : a.entry.pricePerRoom;
+    const primaryB = b.entry.price != null ? b.entry.price : b.entry.pricePerRoom;
+    const cmpPrimary = compareNumeric(primaryA, primaryB, 'asc');
+    if (cmpPrimary !== 0) return cmpPrimary;
+    return compareNumeric(a.entry.pricePerRoom, b.entry.pricePerRoom, 'asc');
+  });
+  const topEntries = ascendingPrice.map(item => ({
     ...item.entry,
     recommendationContext: item.metrics
   }));
@@ -2707,6 +4187,12 @@ function respondWithSuggestions(filters) {
     }
   }
 
+  if (filters && typeof filters.searchRadiusKm === 'number' && filters.searchRadiusKm > 0) {
+    introParts.push(`Applying search radius: ${filters.searchRadiusKm.toFixed(1)} km.`);
+  } else if (suggestionContext && suggestionContext.radiusRequested) {
+    introParts.push('Honouring per-place radius constraints where provided.');
+  }
+
   if (filters && filters.preference) {
     const preferenceMessages = {
       cheapest: 'Prioritizing the most affordable choices.',
@@ -2738,6 +4224,13 @@ function respondWithSuggestions(filters) {
     }
   }
 
+  if (Array.isArray(filters?.priorities) && filters.priorities.length) {
+    const prettyPriority = filters.priorities
+  .map(priority => priority.charAt(0).toUpperCase() + priority.slice(1))
+  .join(' -> ');
+    introParts.push(`Ranking priorities: ${prettyPriority}.`);
+  }
+
   const pendingPlaceNames = Array.isArray(filters?.pendingPlaceNames)
     ? filters.pendingPlaceNames.filter(name => typeof name === 'string' && name.trim().length)
     : [];
@@ -2755,8 +4248,14 @@ function respondWithSuggestions(filters) {
       .map(place => place && place.name ? place.name : null)
       .filter(Boolean);
     if (names.length) {
-      if (suggestionContext.usedProximityFilter) {
+      if (suggestionContext.usedRadius && typeof filters?.searchRadiusKm === 'number' && filters.searchRadiusKm > 0) {
+        introParts.push(`Staying within ${filters.searchRadiusKm.toFixed(1)} km of ${names.join(', ')} where possible.`);
+      } else if (suggestionContext.usedRadius) {
+        introParts.push(`Respecting per-place radius constraints around ${names.join(', ')}.`);
+      } else if (suggestionContext.usedProximityFilter) {
         introParts.push(`Staying within roughly 40 km of ${names.join(', ')}.`);
+      } else if (suggestionContext.radiusFallback) {
+        introParts.push(`No listings fell inside the requested radius around ${names.join(', ')}, so I broadened the search.`);
       } else if (suggestionContext.proximityFallback) {
         introParts.push(`No listings fell within immediate reach of ${names.join(', ')}, so I returned the closest matches I have.`);
       }
@@ -2813,27 +4312,63 @@ function respondForIntent(intent, filters) {
   respondWithFallback();
 }
 
-function handleChatInput(rawInput) {
+async function handleChatInput(rawInput) {
   if (!rawInput) return;
   const message = rawInput.trim();
   if (!message) return;
   appendChatMessage('user', message);
-  const filters = extractFiltersFromMessage(message);
-  const pendingGeocodePromises = Array.isArray(filters.pendingGeocodes)
-    ? filters.pendingGeocodes.filter(p => p && typeof p.then === 'function')
+  const fallbackFilters = extractFiltersFromMessage(message);
+  let filters = fallbackFilters;
+  let intent = determineIntent(message, fallbackFilters);
+  let geminiInterpretation = null;
+
+  try {
+    geminiInterpretation = await normalizeChatQueryWithGemini(message, {
+      fallbackIntent: intent,
+      fallbackFilters
+    });
+  } catch (error) {
+    console.warn('Gemini normalization threw:', error);
+  }
+
+  if (geminiInterpretation && geminiInterpretation.filters) {
+    filters = geminiInterpretation.filters;
+  }
+  if (geminiInterpretation && geminiInterpretation.intent) {
+    intent = geminiInterpretation.intent;
+  }
+
+  if (geminiInterpretation && geminiInterpretation.normalizedPrompt && geminiInterpretation.normalizedPrompt.length && geminiInterpretation.normalizedPrompt !== message) {
+    console.log('Gemini normalized prompt:', geminiInterpretation.normalizedPrompt);
+  }
+  if (geminiInterpretation && geminiInterpretation.notes && geminiInterpretation.notes.length) {
+    console.log('Gemini notes:', geminiInterpretation.notes);
+  }
+
+  const filterSummaryMessage = buildFilterSummaryMessage(filters);
+
+  const pendingGeocodeJobs = Array.isArray(filters.pendingGeocodes)
+    ? filters.pendingGeocodes.filter(job => job && job.promise && typeof job.promise.then === 'function')
     : [];
+  const pendingGeocodePromises = pendingGeocodeJobs.map(job => job.promise);
   const pendingPlaceNames = Array.isArray(filters.pendingPlaceNames)
     ? Array.from(new Set(filters.pendingPlaceNames.filter(name => typeof name === 'string' && name.trim().length)))
     : [];
-  const intent = determineIntent(message, filters);
 
   if (intentRequiresInsights(intent) && !insightsReady) {
+    if (filterSummaryMessage) {
+      appendChatMessage('assistant', filterSummaryMessage);
+    }
     pendingChatQueue.push({ intent, filters });
     if (!chatbotState.waitingForData) {
       appendChatMessage('assistant', 'Housing layers are still loading; I will reply with details shortly.');
       chatbotState.waitingForData = true;
     }
     return;
+  }
+
+  if (filterSummaryMessage) {
+    appendChatMessage('assistant', filterSummaryMessage);
   }
 
   chatbotState.waitingForData = false;
@@ -2846,7 +4381,9 @@ function handleChatInput(rawInput) {
       initialTargetNames: Array.isArray(filters.proximityTargets)
         ? filters.proximityTargets.map(place => place && place.name).filter(Boolean)
         : [],
-      pendingNames: pendingPlaceNames
+      pendingNames: pendingPlaceNames,
+      pendingJobs: pendingGeocodeJobs,
+      baseFilters: filters
     };
     chatbotState.pendingGeocodeFollowups.push(followupToken);
 
@@ -2856,6 +4393,17 @@ function handleChatInput(rawInput) {
       const successfulPlaces = results
         .filter(item => item.status === 'fulfilled' && item.value && item.value.name)
         .map(item => item.value.name);
+
+      if (followupToken.pendingJobs && Array.isArray(followupToken.pendingJobs)) {
+        results.forEach((result, index) => {
+          if (result.status === 'fulfilled' && result.value && typeof result.value === 'object') {
+            const job = followupToken.pendingJobs[index];
+            if (job && typeof job.radiusKm === 'number' && result.value && result.value.radiusKm == null) {
+              result.value.radiusKm = job.radiusKm;
+            }
+          }
+        });
+      }
 
       const refreshedFilters = extractFiltersFromMessage(message);
       const newTargets = Array.isArray(refreshedFilters.proximityTargets) ? refreshedFilters.proximityTargets : [];
@@ -2971,7 +4519,10 @@ function setupChatbot() {
     event.preventDefault();
     const value = input.value;
     input.value = '';
-    handleChatInput(value);
+    handleChatInput(value).catch(error => {
+      console.error('Chat handling failed:', error);
+      appendChatMessage('assistant', 'I ran into a processing error. Please try again in a moment.');
+    });
   });
 
   messages.addEventListener('click', (event) => {
@@ -3185,6 +4736,7 @@ function maybeBuildApartmentInsights() {
   buildApartmentInsights();
 }
 
+initCompareControls();
 setupChatbot();
 
 async function initializeData() {

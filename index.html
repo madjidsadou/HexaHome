@@ -103,6 +103,20 @@
     </label>
   </div>
 
+  <div class="compare-controls">
+    <button type="button" id="compare-toggle" class="compare-button">⚖️ Compare Hexagons</button>
+    <div id="compare-panel" class="compare-panel" hidden>
+      <div class="compare-panel-header">
+        <p id="compare-status" class="compare-status">Select two hexagons on the map to compare.</p>
+        <button type="button" id="compare-reset" class="compare-reset" aria-label="Reset comparison">Reset</button>
+      </div>
+      <div id="compare-selection" class="compare-selection"></div>
+      <div id="compare-summary" class="compare-summary"></div>
+      <div id="compare-chart" class="compare-chart" role="img" aria-live="polite" aria-label="Hexagon comparison dashboard"></div>
+      <p class="compare-hint">Tip: adjust the weights above to see how the comparison shifts.</p>
+    </div>
+  </div>
+
   <h4 id="index" class="menu-toggle">
     <span class="toggle-label">Adjust indexes</span>
     <span class="toggle-right">
